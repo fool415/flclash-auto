@@ -8,10 +8,16 @@
 
 ## 快速使用
 
+先克隆仓库并进入目录(以下命令均在仓库目录内执行):
+
+```bash
+git clone https://github.com/fool415/flclash-auto.git
+cd flclash-auto
+```
+
 Git Bash:
 
 ```bash
-cd /c/Users/ASUS/.zcode/workspace/default/flclash-auto
 ./px.sh curl -sI https://www.google.com     # 任意命令
 ./px.sh git pull
 ./px.sh --test                               # 只测速,显示全部节点延迟
@@ -21,13 +27,13 @@ cd /c/Users/ASUS/.zcode/workspace/default/flclash-auto
 CMD / PowerShell:
 
 ```bat
-C:\Users\ASUS\.zcode\workspace\default\flclash-auto\px.cmd curl -sI https://www.google.com
+px.cmd curl -sI https://www.google.com
 ```
 
 建议加个别名(在 `~/.bashrc` 中):
 
 ```bash
-alias px='python /c/Users/ASUS/.zcode/workspace/default/flclash-auto/flclash_proxy.py'
+alias px="python $(pwd)/flclash_proxy.py"   # 先在仓库目录内执行此行,$(pwd) 会展开成你的实际路径
 # 之后任意地方:  px git push
 ```
 
