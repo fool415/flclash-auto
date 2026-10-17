@@ -20,9 +20,15 @@ jobs:
         id: flclash
         run: |
           curl -fsSL "https://api.github.com/repos/chen08209/FlClash/releases/latest" -o flclash.json
+          url=$(jq -r '.assets[] | select(.name | endswith("windows-amd64.zip")) | .browser_download_url' flclash.json | head -n1)
+          name=$(jq -r '.assets[] | select(.name | endswith("windows-amd64.zip")) | .name' flclash.json | head -n1)
+          if [ -z "$url" ] || [ -z "$name" ]; then
+            echo "::error::FlClash 官方最新 release 未找到 windows-amd64.zip 资产,可能资产命名已变更"
+            exit 1
+          fi
           {
-            echo "url=$(jq -r '.assets[] | select(.name | endswith("windows-amd64.zip")) | .browser_download_url' flclash.json)"
-            echo "name=$(jq -r '.assets[] | select(.name | endswith("windows-amd64.zip")) | .name' flclash.json)"
+            echo "url=$url"
+            echo "name=$name"
             echo "tag=$(jq -r '.tag_name' flclash.json)"
           } >> "$GITHUB_OUTPUT"
 
