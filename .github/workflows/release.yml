@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 1. 解析 FlClash 官方最新 release 里 Windows 便携版(amd64) 的下载地址
+      - name: Resolve latest FlClash Windows portable asset
+        id: flclash
+        run: |
+          curl -fsSL "https://api.github.com/repos/chen08209/FlClash/releases/latest" -o flclash.json
+          {
+            echo "url=$(jq -r '.assets[] | select(.name | endswith("windows-amd64.zip")) | .browser_download_url' flclash.json)"
+            echo "name=$(jq -r '.assets[] | select(.name | endswith("windows-amd64.zip")) | .name' flclash.json)"
+            echo "tag=$(jq -r '.tag_name' flclash.json)"
+          } >> "$GITHUB_OUTPUT"
+
+      # 2. 下载官方便携版(未做任何修改, 作为第三方资产随本 release 附带)
+      - name: Download FlClash portable
+        run: curl -fL "${{ steps.flclash.outputs.url }}" -o "${{ steps.flclash.outputs.name }}"
+
+      # 3. 发布: 附上 FlClash 便携版 + GPL-3.0 全文 + 合规声明
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ${{ steps.flclash.outputs.name }}
+            LICENSE-GPL-3.0.txt
+            THIRD_PARTY_NOTICES.md
