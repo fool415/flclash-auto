@@ -1,0 +1,13 @@
+* text=auto
+
+# 脚本与配置统一 LF，避免 Windows 上 CRLF 导致 bash/sh 脚本报 \r 错误
+*.sh  text eol=lf
+*.py  text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md  text eol=lf
+*.txt text eol=lf
+
+# Windows 批处理用 CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
