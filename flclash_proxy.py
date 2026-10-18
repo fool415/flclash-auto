@@ -16,6 +16,7 @@ FlClash 按需代理启动器
   python flclash_proxy.py --start                           # 启动并选最快节点(保持运行)
   python flclash_proxy.py --stop                            # 强制停止 FlClash
   python flclash_proxy.py --buy                             # 打开订阅购买/注册页面(节点需自备)
+  python flclash_proxy.py --buy kitty                       # 指定购买入口(sakura / kitty)
   python flclash_proxy.py --keep git pull                   # 命令结束后保持 FlClash 运行
   python flclash_proxy.py --force pip install xxx           # 跳过直连检测,强制走代理
   python flclash_proxy.py --direct git pull                 # 强制直连
@@ -24,8 +25,9 @@ FlClash 按需代理启动器
 环境变量(可选):FLCLASH_EXE / FLCLASH_API / FLCLASH_SECRET / FLCLASH_PORT /
                FLCLASH_CANARY / FLCLASH_TESTURL / FLCLASH_START_TIMEOUT /
                FLCLASH_DELAY_MS / FLCLASH_DEBUG(设为 1 输出 API 调试日志) /
-               FLCLASH_BUY_URL(订阅购买地址,默认 https://114514-sakuracat.com) /
-               FLCLASH_INVITE_CODE(邀请码,默认 10spAT6Z;设为空则不追加 ?code=)
+               FLCLASH_BUY_URL(默认入口 sakura 的购买地址,默认 https://114514-sakuracat.com) /
+               FLCLASH_INVITE_CODE(默认入口 sakura 的邀请码,默认 10spAT6Z;设为空则不追加 ?code=)
+               ——内置两个购买入口:sakura(?code=)与 kitty(?invite=),见 README
 """
 
 import argparse
@@ -649,11 +651,39 @@ def select_fastest(timeout_ms=DELAY_TIMEOUT_MS, group_override=None):
 
 
 # ---------------- 订阅购买指引(本工具不提供节点) ----------------
-def buy_url():
-    """购买/注册地址;设置 FLCLASH_INVITE_CODE 时带上邀请码(注册页从 ?code= 读取)"""
-    if INVITE_CODE:
-        return "%s/register?code=%s" % (BUY_URL, urllib.parse.quote(INVITE_CODE))
-    return BUY_URL
+# 购买入口:第三方订阅服务商,本项目只负责给链接,不运营节点、不碰账号与支付。
+# 每条:(命令行名字, 显示名, 站点, 邀请码, 注册页读取的参数名)
+# 注意参数名各家不同:sakura 读 ?code=,kitty 读 ?invite=(也兼容 ?code=),写错则邀请码不生效。
+BUY_PROVIDERS = [
+    ("sakura", "SakuraCat", BUY_URL, INVITE_CODE, "code"),
+    ("kitty", "Kitty Network", "https://kitty.fo", "ZVTCCIUS", "invite"),
+]
+
+
+def find_provider(key=None):
+    """按命令行名字/显示名找入口;不传则用第一个(默认入口),找不到返回 None"""
+    if not key:
+        return BUY_PROVIDERS[0]
+    k = str(key).strip().lower()
+    for prov in BUY_PROVIDERS:
+        if k in (prov[0], prov[1].lower()):
+            return prov
+    return None
+
+
+def provider_url(prov):
+    """入口的注册地址;有邀请码就拼上该服务商认的参数名"""
+    _, _, base, invite, param = prov
+    base = base.rstrip("/")
+    if invite:
+        return "%s/register?%s=%s" % (base, param, urllib.parse.quote(invite))
+    return base
+
+
+def buy_url(key=None):
+    """购买/注册地址;默认入口受 FLCLASH_BUY_URL / FLCLASH_INVITE_CODE 控制"""
+    prov = find_provider(key) or BUY_PROVIDERS[0]
+    return provider_url(prov)
 
 
 def real_node_count(proxies):
@@ -667,18 +697,26 @@ def print_buy_hint(reason=None):
     print("-- 没有可用的代理节点?本工具只负责调度 FlClash,节点/订阅需要自备")
     if reason:
         print("   原因: %s" % reason)
-    print("   订阅服务(第三方,非本项目运营,购买前请自行评估): %s" % buy_url())
+    print("   订阅服务(第三方,非本项目运营,购买前请自行评估):")
+    for prov in BUY_PROVIDERS:
+        print("     · %-14s %s" % (prov[1], provider_url(prov)))
     print("   购买后: 复制订阅链接 → FlClash「配置」→ 添加订阅 → 更新 → 再执行本命令")
 
 
-def cmd_buy():
+def cmd_buy(key=None):
     import webbrowser  # 只有 --buy 需要,延迟导入
-    url = buy_url()
-    print("订阅购买/注册地址: %s" % url)
+    prov = find_provider(key)
+    if prov is None:
+        print("!! 未知的购买入口: %s" % key)
+        print("   可选: %s" % ", ".join("%s(%s)" % (x[0], x[1]) for x in BUY_PROVIDERS))
+        return 2
+    _, name, _, invite, _ = prov
+    url = provider_url(prov)
+    print("%s 订阅购买/注册地址: %s" % (name, url))
     print("步骤: 1) 注册并购买套餐  2) 复制订阅链接  3) FlClash「配置」→ 添加订阅 → 更新")
     print("提示: 账号/套餐/支付/退款均由该订阅服务提供,本工具只给出入口,不保存任何账号信息")
-    if INVITE_CODE:
-        print("邀请码: %s(已包含在上面的链接里)" % INVITE_CODE)
+    if invite:
+        print("邀请码: %s(已包含在上面的链接里)" % invite)
     try:
         opened = webbrowser.open(url)
     except Exception:
@@ -874,8 +912,9 @@ def main():
     p.add_argument("--status", action="store_true", help="查看 FlClash/代理当前状态")
     p.add_argument("--start", action="store_true", help="启动 FlClash 并选最快节点(保持运行)")
     p.add_argument("--stop", action="store_true", help="强制停止 FlClash(全部实例)")
-    p.add_argument("--buy", action="store_true",
-                   help="打开订阅购买/注册页面(本工具不提供节点,节点需自备)")
+    p.add_argument("--buy", nargs="?", const="", metavar="PROVIDER",
+                   help="打开订阅购买/注册页面(本工具不提供节点,节点需自备);"
+                        "可指定入口: %s,默认 sakura" % " / ".join(x[0] for x in BUY_PROVIDERS))
     p.add_argument("--keep", action="store_true", help="命令结束后保持 FlClash 运行(不自动关闭)")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--force", action="store_true", help="跳过直连检测,强制走代理")
@@ -898,8 +937,8 @@ def main():
         return
     if args.start:
         sys.exit(cmd_start(args.group, args.no_speedtest, args.timeout_ms))
-    if args.buy:
-        sys.exit(cmd_buy())
+    if args.buy is not None:
+        sys.exit(cmd_buy(args.buy or None))
     if args.test:
         sys.exit(cmd_test(args.group, args.timeout_ms))
     cmd = [a for a in (args.cmd or []) if a]
