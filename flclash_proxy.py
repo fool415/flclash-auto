@@ -15,6 +15,7 @@ FlClash 按需代理启动器
   python flclash_proxy.py --status                          # 查看当前状态
   python flclash_proxy.py --start                           # 启动并选最快节点(保持运行)
   python flclash_proxy.py --stop                            # 强制停止 FlClash
+  python flclash_proxy.py --buy                             # 打开订阅购买/注册页面(节点需自备)
   python flclash_proxy.py --keep git pull                   # 命令结束后保持 FlClash 运行
   python flclash_proxy.py --force pip install xxx           # 跳过直连检测,强制走代理
   python flclash_proxy.py --direct git pull                 # 强制直连
@@ -22,7 +23,9 @@ FlClash 按需代理启动器
 
 环境变量(可选):FLCLASH_EXE / FLCLASH_API / FLCLASH_SECRET / FLCLASH_PORT /
                FLCLASH_CANARY / FLCLASH_TESTURL / FLCLASH_START_TIMEOUT /
-               FLCLASH_DELAY_MS / FLCLASH_DEBUG(设为 1 输出 API 调试日志)
+               FLCLASH_DELAY_MS / FLCLASH_DEBUG(设为 1 输出 API 调试日志) /
+               FLCLASH_BUY_URL(订阅购买地址,默认 https://114514-sakuracat.com) /
+               FLCLASH_INVITE_CODE(邀请码,设置后 --buy 打开带 ?code= 的注册链接)
 """
 
 import argparse
@@ -55,6 +58,9 @@ TEST_URL = os.environ.get("FLCLASH_TESTURL", "https://www.gstatic.com/generate_2
 START_TIMEOUT = int(os.environ.get("FLCLASH_START_TIMEOUT", "45"))
 DELAY_TIMEOUT_MS = int(os.environ.get("FLCLASH_DELAY_MS", "3000"))
 DEBUG = bool(os.environ.get("FLCLASH_DEBUG"))
+# 订阅购买入口:本工具不提供节点,节点/订阅由用户自备
+BUY_URL = os.environ.get("FLCLASH_BUY_URL", "https://114514-sakuracat.com").rstrip("/")
+INVITE_CODE = os.environ.get("FLCLASH_INVITE_CODE", "").strip()
 
 GROUP_TYPES = {"Selector", "URLTest", "Fallback", "LoadBalance"}
 SELECTABLE_TYPES = {"Selector"}  # 只有 Selector 支持通过 API 手动切换
@@ -597,6 +603,8 @@ def select_fastest(timeout_ms=DELAY_TIMEOUT_MS, group_override=None):
 
     cands = collect_candidates(proxies, root)
     if not cands:
+        if real_node_count(proxies) == 0:
+            print_buy_hint("当前配置里没有任何节点(可能还没购买/导入订阅)")
         # 兜底:global 模式下无可手动切换的节点时,切到自动测速组(URLTest 自选最快)
         if mode == "global":
             auto = auto_group_in(proxies, root)
@@ -637,6 +645,46 @@ def select_fastest(timeout_ms=DELAY_TIMEOUT_MS, group_override=None):
             return None
     print("✓ 最快节点: %s(%d ms)→ 切换路径: %s" % (best, best_delay, " → ".join(seq)))
     return best
+
+
+# ---------------- 订阅购买指引(本工具不提供节点) ----------------
+def buy_url():
+    """购买/注册地址;设置 FLCLASH_INVITE_CODE 时带上邀请码(注册页从 ?code= 读取)"""
+    if INVITE_CODE:
+        return "%s/register?code=%s" % (BUY_URL, urllib.parse.quote(INVITE_CODE))
+    return BUY_URL
+
+
+def real_node_count(proxies):
+    """真实节点数(排除分组本身与"剩余流量/到期时间"这类信息节点)"""
+    return sum(1 for name, info in (proxies or {}).items()
+               if info.get("type") not in BUILTIN_TYPES and not INFO_NODE_PAT.search(name))
+
+
+def print_buy_hint(reason=None):
+    """没有可用节点时给出购买/导入指引;只在确实缺节点时输出,不打扰正常使用"""
+    print("-- 没有可用的代理节点?本工具只负责调度 FlClash,节点/订阅需要自备")
+    if reason:
+        print("   原因: %s" % reason)
+    print("   订阅服务(第三方,非本项目运营,购买前请自行评估): %s" % buy_url())
+    print("   购买后: 复制订阅链接 → FlClash「配置」→ 添加订阅 → 更新 → 再执行本命令")
+
+
+def cmd_buy():
+    import webbrowser  # 只有 --buy 需要,延迟导入
+    url = buy_url()
+    print("订阅购买/注册地址: %s" % url)
+    print("步骤: 1) 注册并购买套餐  2) 复制订阅链接  3) FlClash「配置」→ 添加订阅 → 更新")
+    print("提示: 账号/套餐/支付/退款均由该订阅服务提供,本工具只给出入口,不保存任何账号信息")
+    if INVITE_CODE:
+        print("邀请码: %s(已包含在上面的链接里)" % INVITE_CODE)
+    try:
+        opened = webbrowser.open(url)
+    except Exception:
+        opened = False
+    if not opened:
+        print("!! 未能自动打开浏览器,请手动访问上面的地址")
+    return 0
 
 
 # ---------------- 命令执行 ----------------
@@ -745,7 +793,11 @@ def cmd_status():
         g = pick_target_group(proxies, mode)
         now = (proxies.get(g) or {}).get("now", "?")
         print("模式/当前   : %s / [%s] → %s" % (mode, g, now))
+        nodes = real_node_count(proxies)
+        print("节点数量    : %d" % nodes)
         print("直连检测    : %s" % ("可用(无需代理)" if direct_ok() else "不可用(需要代理)"))
+        if nodes == 0:
+            print_buy_hint("当前配置里没有任何节点(可能还没购买/导入订阅)")
     else:
         print("核心 API    : 无响应(%s)" % API_BASE)
     try:
@@ -821,6 +873,8 @@ def main():
     p.add_argument("--status", action="store_true", help="查看 FlClash/代理当前状态")
     p.add_argument("--start", action="store_true", help="启动 FlClash 并选最快节点(保持运行)")
     p.add_argument("--stop", action="store_true", help="强制停止 FlClash(全部实例)")
+    p.add_argument("--buy", action="store_true",
+                   help="打开订阅购买/注册页面(本工具不提供节点,节点需自备)")
     p.add_argument("--keep", action="store_true", help="命令结束后保持 FlClash 运行(不自动关闭)")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--force", action="store_true", help="跳过直连检测,强制走代理")
@@ -843,6 +897,8 @@ def main():
         return
     if args.start:
         sys.exit(cmd_start(args.group, args.no_speedtest, args.timeout_ms))
+    if args.buy:
+        sys.exit(cmd_buy())
     if args.test:
         sys.exit(cmd_test(args.group, args.timeout_ms))
     cmd = [a for a in (args.cmd or []) if a]
