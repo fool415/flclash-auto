@@ -45,17 +45,25 @@ alias px="python $(pwd)/flclash_proxy.py"   # 先在仓库目录内执行此行,
 本工具**不提供也不附带任何代理节点/订阅**,它只负责调度你本机已安装的 FlClash。FlClash 里必须有可用的节点
 (机场订阅、自建节点等),否则测速/切换无处可选。
 
-如果你还没有订阅,可以用下面的入口自行购买(第三方服务,**非本项目运营**,仅作入口指引):
+如果你还没有订阅,可以用下面的入口自行购买(第三方服务,**非本项目运营**,仅作入口指引)。
+表里两家都**已内置邀请码**,`--buy` 打开的是把邀请码带在链接里的注册页,字段会自动填好,不用手输:
 
-- 注册/购买页:<https://114514-sakuracat.com>
-- 邀请码:**已内置 `10spAT6Z`**——`./px.sh --buy` 会直接打开
-  <https://114514-sakuracat.com/register?code=10spAT6Z>,注册页会把邀请码自动填好,不用手输
+| 入口 | 购买/注册页 | 邀请码 | 注册页参数 |
+|---|---|---|---|
+| `sakura`(SakuraCat,默认) | <https://114514-sakuracat.com> | `10spAT6Z` | `?code=` |
+| `kitty`(Kitty Network) | <https://kitty.fo> | `ZVTCCIUS` | `?invite=` |
 
 ```bash
-./px.sh --buy                                    # 打开购买/注册页(自动带邀请码 10spAT6Z)
-export FLCLASH_INVITE_CODE=别的邀请码             # 可选:换成你自己的邀请码
-FLCLASH_INVITE_CODE= ./px.sh --buy               # 可选:留空则打开不带 ?code= 的普通注册页
+./px.sh --buy                 # 默认 sakura:https://114514-sakuracat.com/register?code=10spAT6Z
+./px.sh --buy kitty           # kitty:https://kitty.fo/register?invite=ZVTCCIUS
+./px.sh --buy sakura          # 显式指定默认入口
+export FLCLASH_BUY_URL=https://你的服务商   # 可选:替换默认入口的站点
+export FLCLASH_INVITE_CODE=别的邀请码        # 可选:只影响默认入口(sakura)的邀请码
+FLCLASH_INVITE_CODE= ./px.sh --buy          # 可选:留空则打开不带 ?code= 的普通注册页
 ```
+
+> 两家的参数名不一样:sakura 读 `?code=`,kitty 读 `?invite=`(kitty 也兼容 `?code=`)。
+> 把邀请码拼到不认的参数名上不会报错,只会静默失效,所以 `--buy` 按入口自动选参数。
 
 **购买后的接入步骤**:
 
@@ -103,7 +111,7 @@ px <命令>
 | `px --status` | 查看 FlClash/核心/端口/系统代理/直连状态 |
 | `px --start` | 启动 FlClash 并选最快节点(保持运行) |
 | `px --stop` | 强制停止 FlClash 全部实例(并修复系统代理注册表) |
-| `px --buy` | 打开订阅购买/注册页面(自动带邀请码 10spAT6Z;节点需自备) |
+| `px --buy [sakura\|kitty]` | 打开订阅购买/注册页面(自动带邀请码;可指定入口,默认 sakura) |
 | `px --keep <命令>` | 执行后保持 FlClash 运行,不自动关闭 |
 | `px --force <命令>` | 跳过直连检测,强制走代理(与 `--direct` 互斥) |
 | `px --direct <命令>` | 强制直连,不走代理(与 `--force` 互斥) |
@@ -128,8 +136,8 @@ px <命令>
 | `FLCLASH_START_TIMEOUT` | `45` | 启动就绪等待秒数 |
 | `FLCLASH_DELAY_MS` | `3000` | 单节点测速超时毫秒 |
 | `FLCLASH_ABORT_ON_PORT_CONFLICT` | 未设置 | 设为 `1` 时,7890 被非 FlClash 程序占用直接中止(默认仅警告) |
-| `FLCLASH_BUY_URL` | `https://114514-sakuracat.com` | `--buy`/缺节点提示使用的订阅购买地址 |
-| `FLCLASH_INVITE_CODE` | `10spAT6Z` | 邀请码;`--buy` 打开 `/register?code=<邀请码>`,设为空则不带 |
+| `FLCLASH_BUY_URL` | `https://114514-sakuracat.com` | 默认入口(sakura)的购买地址 |
+| `FLCLASH_INVITE_CODE` | `10spAT6Z` | 默认入口(sakura)的邀请码,拼成 `/register?code=<邀请码>`;设为空则不带 |
 | `FLCLASH_DEBUG` | 未设置 | 设为 `1` 时输出 API 调用失败详情到 stderr |
 
 ## 关于直连探测地址(canary)的选择
@@ -152,6 +160,7 @@ px <命令>
 - 启动子进程时会剔除 `ELECTRON_RUN_AS_NODE`,避免从 Electron 系宿主(如某些终端/IDE)调用时 FlClash 静默启动失败。
 - 环境变量方式对 `curl/git/pip/npm` 等绝大多数命令行工具生效;不读取环境变量的图形程序请用 FlClash 的系统代理/TUN 模式。
 - 购买入口(`--buy` / 缺节点提示)只读地址、只开浏览器,不涉及账号登录、支付或订阅抓取;订阅链接仍需你在 FlClash 里手动导入。
+- 内置的两个购买入口只是链接常量(站点 + 邀请码),不含任何账号信息;不想带邀请码可用 `FLCLASH_INVITE_CODE=` 清掉默认入口那一个。
 
 ## 换机 / 需要按机器调整的点
 
@@ -210,7 +219,7 @@ cd flclash-auto
 ./px.sh git pull
 ./px.sh --test          # speed-test all nodes
 ./px.sh --status        # show current state
-./px.sh --buy           # open the subscription purchase/registration page
+./px.sh --buy kitty     # open a specific entry (default: sakura)
 
 # CMD / PowerShell
 px.cmd curl -sI https://www.google.com
@@ -231,7 +240,7 @@ alias px="python /absolute/path/to/flclash_proxy.py"
 | `px --status` | Show FlClash / core / port / system proxy / direct status and node count |
 | `px --start` | Start FlClash, pick the fastest node, keep it running |
 | `px --stop` | Force-stop every FlClash instance and repair the system proxy |
-| `px --buy` | Open the subscription purchase/registration page (invite code included) |
+| `px --buy [sakura\|kitty]` | Open the subscription purchase/registration page (invite code included; entry selectable, default `sakura`) |
 | `px --keep <command>` | Keep FlClash running after the command |
 | `px --force <command>` | Skip the direct probe, always use the proxy |
 | `px --direct <command>` | Always go direct |
@@ -245,16 +254,23 @@ alias px="python /absolute/path/to/flclash_proxy.py"
 
 This tool does **not** provide or bundle any proxies/subscriptions — it only drives the FlClash client already on your machine, so FlClash must contain usable nodes.
 
-If you don't have one yet, you can buy a subscription from this third-party provider (**not operated by this project**; entry link only):
+If you don't have one yet, you can buy a subscription from the third-party providers below (**not operated by this project**; entry link only). Both have an invite code **built in**, and `--buy` opens the registration page with that code already in the URL, so the field is pre-filled:
 
-- Registration / purchase page: <https://114514-sakuracat.com>
-- Invite code: **`10spAT6Z` is built in** — `./px.sh --buy` opens <https://114514-sakuracat.com/register?code=10spAT6Z> and the field is pre-filled.
+| Entry | Registration page | Invite code | Query parameter |
+|---|---|---|---|
+| `sakura` (SakuraCat, default) | <https://114514-sakuracat.com> | `10spAT6Z` | `?code=` |
+| `kitty` (Kitty Network) | <https://kitty.fo> | `ZVTCCIUS` | `?invite=` |
 
 ```bash
-./px.sh --buy                          # opens with invite code 10spAT6Z
-export FLCLASH_INVITE_CODE=another     # use your own code instead
-FLCLASH_INVITE_CODE= ./px.sh --buy     # empty => plain register page, no ?code=
+./px.sh --buy                 # default sakura: https://114514-sakuracat.com/register?code=10spAT6Z
+./px.sh --buy kitty           # kitty: https://kitty.fo/register?invite=ZVTCCIUS
+./px.sh --buy sakura          # explicit default entry
+export FLCLASH_BUY_URL=https://your-provider   # optional: replace the default entry's site
+export FLCLASH_INVITE_CODE=another             # optional: default entry (sakura) only
+FLCLASH_INVITE_CODE= ./px.sh --buy             # optional: plain register page, no ?code=
 ```
+
+> The two providers use different parameter names: sakura reads `?code=`, kitty reads `?invite=` (kitty also accepts `?code=`). Putting a code on a parameter name the site ignores fails silently, which is why `--buy` picks the right one per entry.
 
 After purchase: copy your Clash subscription URL → FlClash → **Profiles** → add profile → update → then use `./px.sh <command>` again.
 
@@ -273,8 +289,8 @@ Accounts, plans, payment and refunds are handled by that provider; this tool rea
 | `FLCLASH_START_TIMEOUT` | `45` | Seconds to wait for FlClash to be ready |
 | `FLCLASH_DELAY_MS` | `3000` | Per-node speed-test timeout (ms) |
 | `FLCLASH_ABORT_ON_PORT_CONFLICT` | unset | `1` = abort if port 7890 is held by a non-FlClash process |
-| `FLCLASH_BUY_URL` | `https://114514-sakuracat.com` | Purchase page used by `--buy` and the no-node hint |
-| `FLCLASH_INVITE_CODE` | `10spAT6Z` | Invite code appended as `/register?code=<code>`; set empty to disable |
+| `FLCLASH_BUY_URL` | `https://114514-sakuracat.com` | Purchase page of the default entry (`sakura`) |
+| `FLCLASH_INVITE_CODE` | `10spAT6Z` | Invite code of the default entry (`sakura`), appended as `/register?code=<code>`; set empty to disable |
 | `FLCLASH_DEBUG` | unset | `1` = print API error details to stderr |
 
 ### Notes & limitations
@@ -286,6 +302,7 @@ Accounts, plans, payment and refunds are handled by that provider; this tool rea
 - `ELECTRON_RUN_AS_NODE` is stripped from the child environment so FlClash doesn't silently no-op when launched from an Electron host.
 - Environment-variable proxying works for `curl`, `git`, `pip`, `npm`, etc.; GUI apps that ignore env vars need FlClash's system-proxy or TUN mode.
 - `--buy` only opens a URL in your default browser; it never logins, pays, or fetches your subscription.
+- The two built-in entries are just link constants (site + invite code) — no credentials. Clear the default one with `FLCLASH_INVITE_CODE=`.
 
 ### License
 
