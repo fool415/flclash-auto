@@ -1,5 +1,7 @@
 # FlClash 按需代理启动器
 
+> 中文文档在下方;[English documentation ↓](#english)
+
 > **依赖**：本工具是针对开源客户端 [FlClash](https://github.com/chen08209/FlClash)（GPL-3.0）的第三方命令行调度器，
 > 需要本机已安装 FlClash（安装版或便携版均可）。FlClash 本体**不打包在本仓库源码内**，
 > 但本仓库的 GitHub Release 会附带官方 Windows 便携版，合规说明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
@@ -46,11 +48,13 @@ alias px="python $(pwd)/flclash_proxy.py"   # 先在仓库目录内执行此行,
 如果你还没有订阅,可以用下面的入口自行购买(第三方服务,**非本项目运营**,仅作入口指引):
 
 - 注册/购买页:<https://114514-sakuracat.com>
-- 邀请码(可选):设置环境变量 `FLCLASH_INVITE_CODE`,再执行 `./px.sh --buy`,会打开带 `?code=` 的注册链接
+- 邀请码:**已内置 `10spAT6Z`**——`./px.sh --buy` 会直接打开
+  <https://114514-sakuracat.com/register?code=10spAT6Z>,注册页会把邀请码自动填好,不用手输
 
 ```bash
-export FLCLASH_INVITE_CODE=你的邀请码   # 可选;注册页会把 ?code= 自动填进邀请码栏
-./px.sh --buy                          # 打开购买/注册页
+./px.sh --buy                                    # 打开购买/注册页(自动带邀请码 10spAT6Z)
+export FLCLASH_INVITE_CODE=别的邀请码             # 可选:换成你自己的邀请码
+FLCLASH_INVITE_CODE= ./px.sh --buy               # 可选:留空则打开不带 ?code= 的普通注册页
 ```
 
 **购买后的接入步骤**:
@@ -99,7 +103,7 @@ px <命令>
 | `px --status` | 查看 FlClash/核心/端口/系统代理/直连状态 |
 | `px --start` | 启动 FlClash 并选最快节点(保持运行) |
 | `px --stop` | 强制停止 FlClash 全部实例(并修复系统代理注册表) |
-| `px --buy` | 打开订阅购买/注册页面(可选带邀请码;节点需自备) |
+| `px --buy` | 打开订阅购买/注册页面(自动带邀请码 10spAT6Z;节点需自备) |
 | `px --keep <命令>` | 执行后保持 FlClash 运行,不自动关闭 |
 | `px --force <命令>` | 跳过直连检测,强制走代理(与 `--direct` 互斥) |
 | `px --direct <命令>` | 强制直连,不走代理(与 `--force` 互斥) |
@@ -125,7 +129,7 @@ px <命令>
 | `FLCLASH_DELAY_MS` | `3000` | 单节点测速超时毫秒 |
 | `FLCLASH_ABORT_ON_PORT_CONFLICT` | 未设置 | 设为 `1` 时,7890 被非 FlClash 程序占用直接中止(默认仅警告) |
 | `FLCLASH_BUY_URL` | `https://114514-sakuracat.com` | `--buy`/缺节点提示使用的订阅购买地址 |
-| `FLCLASH_INVITE_CODE` | 空 | 邀请码;设置后 `--buy` 打开 `/register?code=<邀请码>` |
+| `FLCLASH_INVITE_CODE` | `10spAT6Z` | 邀请码;`--buy` 打开 `/register?code=<邀请码>`,设为空则不带 |
 | `FLCLASH_DEBUG` | 未设置 | 设为 `1` 时输出 API 调用失败详情到 stderr |
 
 ## 关于直连探测地址(canary)的选择
@@ -172,3 +176,117 @@ px <命令>
 本工具以 MIT 许可证发布,见 [LICENSE](./LICENSE)。它调用的 FlClash 客户端以 GPL-3.0 发布,两者是相互独立的软件
 (本工具仅启动 FlClash 进程并调用其本地 HTTP API,不构成 GPL 派生作品)。
 FlClash 版权、GPL-3.0 全文与再分发说明详见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) 与 [LICENSE-GPL-3.0.txt](./LICENSE-GPL-3.0.txt)。
+
+---
+
+## English
+
+**FlClash On-Demand Proxy Launcher** — a small Windows command-line wrapper around the open-source [FlClash](https://github.com/chen08209/FlClash) client (GPL-3.0). It starts FlClash only when you actually need a proxy, picks the fastest node, runs your command, then closes FlClash again.
+
+> FlClash itself is **not** bundled in this repository's source. The GitHub Release also ships the official Windows portable build, see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+
+### What it does
+
+1. Tests direct connectivity first — if the site is reachable without a proxy, your command just runs (fastest path).
+2. Otherwise starts FlClash, waits for the local proxy port (`7890`), and speed-tests all nodes concurrently through the Clash API.
+3. Switches every selector on the path to the lowest-latency node (handles nested groups in `global` mode).
+4. Runs your command with `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` pointing to `127.0.0.1:7890` and passes the exit code through.
+5. Closes FlClash **only if this tool started it** (by PID) and restores the previous Windows system-proxy registry settings. If FlClash was already running, it is reused and left alone.
+
+### Requirements
+
+- Windows 10/11
+- Python 3 (standard library only; `px.sh` / `px.cmd` fall back to `py -3`)
+- FlClash installed (installer or portable) — auto-detected under `Program Files`, `Program Files (x86)` or `LOCALAPPDATA\Programs`, or set `FLCLASH_EXE`
+
+### Quick start
+
+```bash
+git clone https://github.com/fool415/flclash-auto.git
+cd flclash-auto
+
+# Git Bash
+./px.sh curl -sI https://www.google.com
+./px.sh git pull
+./px.sh --test          # speed-test all nodes
+./px.sh --status        # show current state
+./px.sh --buy           # open the subscription purchase/registration page
+
+# CMD / PowerShell
+px.cmd curl -sI https://www.google.com
+```
+
+Optional alias (`~/.bashrc`), so it works from anywhere:
+
+```bash
+alias px="python /absolute/path/to/flclash_proxy.py"
+```
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `px <command...>` | Auto mode: probe → start → speed-test → run → close |
+| `px --test` | Speed-test all nodes and print a table |
+| `px --status` | Show FlClash / core / port / system proxy / direct status and node count |
+| `px --start` | Start FlClash, pick the fastest node, keep it running |
+| `px --stop` | Force-stop every FlClash instance and repair the system proxy |
+| `px --buy` | Open the subscription purchase/registration page (invite code included) |
+| `px --keep <command>` | Keep FlClash running after the command |
+| `px --force <command>` | Skip the direct probe, always use the proxy |
+| `px --direct <command>` | Always go direct |
+| `px --no-speedtest <command>` | Keep the current node, skip speed-testing |
+| `px --group <name> <command>` | Target a specific proxy group |
+| `px --canary <url> <command>` | Custom direct-connectivity probe URL |
+| `px --timeout-ms 8000 <command>` | Per-node speed-test timeout (default 3000 ms) |
+| `px --strict <command>` | Abort if speed-test/switch fails (default: run on current node) |
+
+### No nodes yet? (subscription)
+
+This tool does **not** provide or bundle any proxies/subscriptions — it only drives the FlClash client already on your machine, so FlClash must contain usable nodes.
+
+If you don't have one yet, you can buy a subscription from this third-party provider (**not operated by this project**; entry link only):
+
+- Registration / purchase page: <https://114514-sakuracat.com>
+- Invite code: **`10spAT6Z` is built in** — `./px.sh --buy` opens <https://114514-sakuracat.com/register?code=10spAT6Z> and the field is pre-filled.
+
+```bash
+./px.sh --buy                          # opens with invite code 10spAT6Z
+export FLCLASH_INVITE_CODE=another     # use your own code instead
+FLCLASH_INVITE_CODE= ./px.sh --buy     # empty => plain register page, no ?code=
+```
+
+After purchase: copy your Clash subscription URL → FlClash → **Profiles** → add profile → update → then use `./px.sh <command>` again.
+
+Accounts, plans, payment and refunds are handled by that provider; this tool reads and stores no credentials. When your config contains zero real nodes, `px --status` prints `节点数量: 0` and both auto mode and `--status` show the purchase/import hint instead of a bare "switch failed".
+
+### Configuration (environment variables)
+
+| Variable | Default | Description |
+|---|---|---|
+| `FLCLASH_EXE` | `C:\Program Files\FlClash\FlClash.exe` | Path to `FlClash.exe` |
+| `FLCLASH_API` | `http://127.0.0.1:9090` | Clash external-controller address |
+| `FLCLASH_SECRET` | empty | External-controller secret, if set |
+| `FLCLASH_PORT` | `7890` | Local mixed proxy port |
+| `FLCLASH_CANARY` | `https://www.google.com/generate_204` | Direct-connectivity probe URL |
+| `FLCLASH_TESTURL` | `https://www.gstatic.com/generate_204` | Node speed-test URL |
+| `FLCLASH_START_TIMEOUT` | `45` | Seconds to wait for FlClash to be ready |
+| `FLCLASH_DELAY_MS` | `3000` | Per-node speed-test timeout (ms) |
+| `FLCLASH_ABORT_ON_PORT_CONFLICT` | unset | `1` = abort if port 7890 is held by a non-FlClash process |
+| `FLCLASH_BUY_URL` | `https://114514-sakuracat.com` | Purchase page used by `--buy` and the no-node hint |
+| `FLCLASH_INVITE_CODE` | `10spAT6Z` | Invite code appended as `/register?code=<code>`; set empty to disable |
+| `FLCLASH_DEBUG` | unset | `1` = print API error details to stderr |
+
+### Notes & limitations
+
+- Node selection walks the whole selector chain; `rule` mode detects the main selector group automatically.
+- Concurrency: parallel `px` runs share `%TEMP%\flclash_proxy.lock` with liveness-checked owners, so only the last exiting instance closes FlClash.
+- The system proxy registry keys (`ProxyEnable` / `ProxyServer` / `ProxyOverride`) are snapshotted before start and restored afterwards.
+- If FlClash is already running with `mixed-port = 0`, the tool temporarily enables the port and restores it when done.
+- `ELECTRON_RUN_AS_NODE` is stripped from the child environment so FlClash doesn't silently no-op when launched from an Electron host.
+- Environment-variable proxying works for `curl`, `git`, `pip`, `npm`, etc.; GUI apps that ignore env vars need FlClash's system-proxy or TUN mode.
+- `--buy` only opens a URL in your default browser; it never logins, pays, or fetches your subscription.
+
+### License
+
+MIT — see [LICENSE](./LICENSE). FlClash is GPL-3.0; this tool only launches it and talks to its local HTTP API, so the two are independent works. See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) and [LICENSE-GPL-3.0.txt](./LICENSE-GPL-3.0.txt).

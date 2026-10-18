@@ -25,7 +25,7 @@ FlClash 按需代理启动器
                FLCLASH_CANARY / FLCLASH_TESTURL / FLCLASH_START_TIMEOUT /
                FLCLASH_DELAY_MS / FLCLASH_DEBUG(设为 1 输出 API 调试日志) /
                FLCLASH_BUY_URL(订阅购买地址,默认 https://114514-sakuracat.com) /
-               FLCLASH_INVITE_CODE(邀请码,设置后 --buy 打开带 ?code= 的注册链接)
+               FLCLASH_INVITE_CODE(邀请码,默认 10spAT6Z;设为空则不追加 ?code=)
 """
 
 import argparse
@@ -60,7 +60,8 @@ DELAY_TIMEOUT_MS = int(os.environ.get("FLCLASH_DELAY_MS", "3000"))
 DEBUG = bool(os.environ.get("FLCLASH_DEBUG"))
 # 订阅购买入口:本工具不提供节点,节点/订阅由用户自备
 BUY_URL = os.environ.get("FLCLASH_BUY_URL", "https://114514-sakuracat.com").rstrip("/")
-INVITE_CODE = os.environ.get("FLCLASH_INVITE_CODE", "").strip()
+# 默认邀请码:--buy 打开注册页时自动带上;设 FLCLASH_INVITE_CODE= 空值可关闭
+INVITE_CODE = os.environ.get("FLCLASH_INVITE_CODE", "10spAT6Z").strip()
 
 GROUP_TYPES = {"Selector", "URLTest", "Fallback", "LoadBalance"}
 SELECTABLE_TYPES = {"Selector"}  # 只有 Selector 支持通过 API 手动切换
