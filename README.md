@@ -78,6 +78,31 @@ FLCLASH_INVITE_CODE= ./px.sh --buy          # 可选:留空则打开不带 ?code
 > 另外:配置里没有任何真实节点时,`px --status` 会显示「节点数量: 0」并给出购买提示;
 > 自动模式测速找不到可切换节点时也会给出同样提示,不再让你对着「切换失败」猜原因。
 
+## 还没有代理,连 GitHub 都打不开?(应急:Watt Toolkit)
+
+如果你的机器上**一个代理都没有**,那连 `git clone` 本仓库这一步都过不去。这种时候可以先拿
+[Watt Toolkit](https://github.com/BeyondDimension/SteamTools)(原名 Steam++,开源免费)当跳板:
+
+1. 到 [Releases](https://github.com/BeyondDimension/SteamTools/releases) 下载安装(官网 <https://steampp.net>);
+2. 左侧选「网络加速」,勾上 GitHub(以及你需要的域名),点「一键加速」;
+3. 这时 `git clone https://github.com/fool415/flclash-auto.git` 就能拉下来了。
+
+**但它只是应急,不建议长期用,原因很实在:**
+
+- **它是 hosts 劫持**:把 `github.com` 这类域名改写到 `127.0.0.1`,再由本地反向代理转发。
+  名字在选路之前就已经指向本机了,所以 FlClash 的 TUN 模式也绕不过它,两边同时开容易互相打架
+  (一边改 hosts、一边改系统代理),报错还很难查;
+- **覆盖面很窄**:通常只覆盖 GitHub / Steam / npm 等少数域名,YouTube、Google、Docker Hub
+  这些它不管,该不通还是不通;
+- **证书是它本地签的**:部分工具会报 `CRYPT_E_NO_REVOCATION_CHECK` 或证书不受信任;
+  FlClash 自己测速/拉订阅时也可能被这层劫持干扰。
+
+所以正确的顺序是:**用 Watt Toolkit 先把仓库 clone 下来 → 按上一节买订阅、装好 FlClash →
+用 `px` 走真正的代理 → 然后退出 Watt Toolkit、关掉它的加速**,避免 hosts 里留下劫持条目。
+
+> 事后检查残留:打开 `C:\Windows\System32\drivers\etc\hosts`,搜一下有没有把 `github.com`、
+> `raw.githubusercontent.com` 等指向 `127.0.0.1` 的行,有的话删掉(或让 Watt Toolkit 自己还原)。
+
 ## 工作流程
 
 ```
@@ -275,6 +300,35 @@ FLCLASH_INVITE_CODE= ./px.sh --buy             # optional: plain register page, 
 After purchase: copy your Clash subscription URL → FlClash → **Profiles** → add profile → update → then use `./px.sh <command>` again.
 
 Accounts, plans, payment and refunds are handled by that provider; this tool reads and stores no credentials. When your config contains zero real nodes, `px --status` prints `节点数量: 0` and both auto mode and `--status` show the purchase/import hint instead of a bare "switch failed".
+
+### No proxy at all, can't even reach GitHub? (stopgap: Watt Toolkit)
+
+If the machine has **no proxy whatsoever**, you can't even `git clone` this repo. In that case
+[Watt Toolkit](https://github.com/BeyondDimension/SteamTools) (formerly Steam++, open source and free)
+can serve as a stepping stone:
+
+1. Download it from [Releases](https://github.com/BeyondDimension/SteamTools/releases) (site: <https://steampp.net>);
+2. Pick **Network Acceleration** on the left, tick GitHub (and whatever else you need), hit **Accelerate**;
+3. Now `git clone https://github.com/fool415/flclash-auto.git` works.
+
+**It is a stopgap, not a replacement — here is why:**
+
+- **It hijacks hosts**: `github.com` and friends are rewritten to `127.0.0.1` and served by a local
+  reverse proxy. The name resolves to your own machine *before* any routing decision, so even FlClash
+  in TUN mode cannot route around it. Running both at once is a common source of confusing failures
+  (one tool edits hosts, the other edits the system proxy);
+- **Narrow coverage**: typically only GitHub / Steam / npm and a few more. YouTube, Google, Docker Hub
+  and the rest stay blocked;
+- **It signs its own certificate**: some tools then report `CRYPT_E_NO_REVOCATION_CHECK` or an untrusted
+  certificate, and FlClash's own latency tests / profile updates can be disturbed by the same hijack.
+
+So the right order is: **use Watt Toolkit only to clone this repo → buy a subscription and install
+FlClash as described above → run everything through `px` → then quit Watt Toolkit and turn its
+acceleration off**, so no hosts entries are left behind.
+
+> To check for leftovers, open `C:\Windows\System32\drivers\etc\hosts` and search for `github.com`,
+> `raw.githubusercontent.com` and similar names pointing at `127.0.0.1`; delete those lines (or let
+> Watt Toolkit restore them).
 
 ### Configuration (environment variables)
 
