@@ -7,6 +7,8 @@
 [![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](#)
 [![Python](https://img.shields.io/badge/python-3.8%2B-3776ab)](#)
 
+**展示页 / 一键安装说明**:https://fool415.github.io/flclash-auto/
+
 > **给命令加个 `px`:需要网络时才开代理,用完就关。**
 > `px git pull` —— 自动启动 FlClash、测速挑最快节点、跑完自动关掉,不常驻、不手点、不误杀。
 
