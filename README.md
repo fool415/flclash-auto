@@ -31,6 +31,17 @@
 
 ## 快速使用
 
+**方式一:一行安装(PowerShell,推荐)**
+
+```powershell
+irm https://raw.githubusercontent.com/fool415/flclash-auto/main/install.ps1 | iex
+```
+
+装到 `%LOCALAPPDATA%\flclash-auto` 并加入用户 PATH(不需要管理员),新开终端即可用 `px`。
+可选参数:`-Dir D:\tools\flclash-auto`、`-Ref v1.0.0`、`-NoPath`、`-Force`(见 `install.ps1` 头部注释)。
+
+**方式二:克隆源码**
+
 先克隆仓库并进入目录(以下命令均在仓库目录内执行):
 
 ```bash

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flclash-auto · 按需代理启动器</title>
+<meta name="description" content="Windows 上像用 npm 一样用代理:需要时才启动 FlClash,自动挑最快节点,命令结束自动关闭。支持订阅级故障切换。">
+<meta property="og:title" content="flclash-auto · 按需代理启动器">
+<meta property="og:description" content="px git pull —— 需要网络时才开代理,用完就关。">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐟</text></svg>">
+<style>
+  :root{
+    --bg:#0d1017; --panel:#141a26; --panel-2:#1a2233; --line:#26304a;
+    --txt:#dfe5f2; --dim:#8a96ad; --accent:#5eead4; --accent-2:#7dd3fc;
+    --ok:#6ee7a8; --warn:#f2c14e; --mono:ui-monospace,SFMono-Regular,Consolas,"Cascadia Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:radial-gradient(1200px 600px at 70% -10%, #16304a 0%, var(--bg) 55%) fixed;
+    color:var(--txt); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC","Microsoft YaHei",sans-serif;
+    line-height:1.65; -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent-2); text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1040px; margin:0 auto; padding:0 22px}
+
+  header{border-bottom:1px solid var(--line); backdrop-filter:blur(8px); position:sticky; top:0; background:rgba(13,16,23,.78); z-index:9}
+  .nav{display:flex; align-items:center; gap:16px; height:58px}
+  .brand{font-weight:700; letter-spacing:.2px; font-size:15px}
+  .brand span{color:var(--accent)}
+  .nav .spacer{flex:1}
+  .nav a.lnk{color:var(--dim); font-size:14px}
+  .nav a.lnk:hover{color:var(--txt); text-decoration:none}
+
+  .hero{padding:58px 0 26px; display:grid; grid-template-columns:1.15fr .85fr; gap:36px; align-items:center}
+  @media (max-width:820px){.hero{grid-template-columns:1fr; padding-top:36px}}
+  h1{font-size:38px; line-height:1.22; margin:0 0 14px; letter-spacing:-.5px}
+  h1 em{font-style:normal; color:var(--accent)}
+  .lede{color:var(--dim); font-size:16.5px; margin:0 0 22px}
+  .cta{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px}
+  .btn{display:inline-flex; align-items:center; gap:8px; padding:9px 16px; border-radius:9px; font-size:14.5px; font-weight:600; border:1px solid var(--line)}
+  .btn.primary{background:linear-gradient(180deg,#123c3a,#0f2f2e); color:var(--accent); border-color:#1f5b56}
+  .btn.ghost{color:var(--txt); background:var(--panel)}
+  .btn:hover{text-decoration:none; filter:brightness(1.15)}
+
+  .cmdbox{background:linear-gradient(180deg,var(--panel-2),var(--panel)); border:1px solid var(--line); border-radius:12px; overflow:hidden}
+  .cmdbox .bar{display:flex; align-items:center; gap:6px; padding:9px 12px; border-bottom:1px solid var(--line); color:var(--dim); font-size:12px}
+  .dot{width:9px; height:9px; border-radius:50%}
+  .cmdbox pre{margin:0; padding:14px 14px; font-family:var(--mono); font-size:13px; overflow-x:auto; color:#cfe6ff}
+  .cmdbox .copy{margin-left:auto; background:none; border:1px solid var(--line); color:var(--dim); font-size:12px; border-radius:6px; padding:3px 8px; cursor:pointer}
+  .cmdbox .copy:hover{color:var(--accent); border-color:#2b6f68}
+  .hint{color:var(--dim); font-size:12.5px; margin-top:8px}
+
+  section{padding:44px 0}
+  h2{font-size:23px; margin:0 0 18px; letter-spacing:-.2px}
+  h2 small{color:var(--dim); font-weight:400; font-size:14px; margin-left:8px}
+
+  .grid{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
+  @media (max-width:820px){.grid{grid-template-columns:1fr 1fr}}
+  @media (max-width:560px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 16px 14px}
+  .card h3{margin:0 0 6px; font-size:15px}
+  .card p{margin:0; color:var(--dim); font-size:13.5px}
+  .card .ico{font-size:18px; margin-bottom:8px; display:block}
+
+  .term{width:100%; border-radius:12px; border:1px solid var(--line); display:block; box-shadow:0 24px 60px rgba(0,0,0,.45)}
+
+  .steps{counter-reset:s; display:grid; gap:12px}
+  .step{display:grid; grid-template-columns:34px 1fr; gap:14px; align-items:start; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px}
+  .step:before{counter-increment:s; content:counter(s); display:grid; place-items:center; width:30px; height:30px; border-radius:50%; background:#123c3a; color:var(--accent); font-weight:700; font-size:14px}
+  .step code{font-family:var(--mono); font-size:13px; background:#0b1220; border:1px solid var(--line); padding:2px 6px; border-radius:6px; color:#cfe6ff}
+  .step p{margin:6px 0 0; color:var(--dim); font-size:13.5px}
+
+  details{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 16px; margin-bottom:10px}
+  details summary{cursor:pointer; font-weight:600; font-size:14.5px}
+  details p{color:var(--dim); font-size:13.8px; margin:8px 0 0}
+
+  footer{border-top:1px solid var(--line); padding:26px 0 40px; color:var(--dim); font-size:13px}
+  footer .row{display:flex; gap:18px; flex-wrap:wrap; align-items:center}
+  .kbd{font-family:var(--mono); background:#0b1220; border:1px solid var(--line); padding:1px 6px; border-radius:5px; font-size:12.5px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <div class="brand">flclash<span>-auto</span></div>
+    <div class="spacer"></div>
+    <a class="lnk" href="#why">为什么</a>
+    <a class="lnk" href="#start">上手</a>
+    <a class="lnk" href="#faq">FAQ</a>
+    <a class="lnk" href="https://github.com/fool415/flclash-auto">GitHub ↗</a>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="hero" style="padding-bottom:8px">
+    <div>
+      <h1>像用 <em>npm</em> 一样用代理</h1>
+      <p class="lede">
+        <span class="kbd">px git pull</span> —— 需要网络时才启动 FlClash,自动挑最快节点,
+        命令结束就关掉。不常驻、不手点、不误杀。
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/fool415/flclash-auto/releases">下载 Release</a>
+        <a class="btn ghost" href="https://github.com/fool415/flclash-auto">源码 / Star ★</a>
+      </div>
+      <p class="hint">Windows 10/11 · Python 3 标准库 · 零依赖 · MIT</p>
+    </div>
+
+    <div>
+      <div class="cmdbox">
+        <div class="bar">
+          <span class="dot" style="background:#ff5f57"></span>
+          <span class="dot" style="background:#febc2e"></span>
+          <span class="dot" style="background:#28c840"></span>
+          <span style="margin-left:8px">PowerShell · 一行安装</span>
+          <button class="copy" data-copy="irm https://raw.githubusercontent.com/fool415/flclash-auto/main/install.ps1 | iex">复制</button>
+        </div>
+<pre>irm https://raw.githubusercontent.com/fool415/flclash-auto/main/install.ps1 | iex</pre>
+      </div>
+      <p class="hint">装到 <span class="kbd">%LOCALAPPDATA%\flclash-auto</span> 并加入用户 PATH,不需要管理员。</p>
+    </div>
+  </section>
+
+  <section>
+    <img class="term" src="demo.svg" alt="命令模式、快路径、配置级故障切换的终端演示">
+  </section>
+
+  <section id="why">
+    <h2>为什么不用「常开代理」<small>三种做法的代价</small></h2>
+    <div class="grid">
+      <div class="card"><span class="ico">♨️</span><h3>客户端常驻 + 系统代理常开</h3><p>开机自启、常吃内存;忘关就一直走代理,看视频、下大文件白耗流量。</p></div>
+      <div class="card"><span class="ico">🖱️</span><h3>需要时手动开关</h3><p>每天十几次点击;忘了开就 <code>git push</code> 超时,忘了关就整机绕代理。</p></div>
+      <div class="card"><span class="ico">📉</span><h3>只有一个订阅</h3><p>机场超售或被打时全灭,临时找订阅、改配置、重启客户端,活儿全停了。</p></div>
+      <div class="card"><span class="ico">⚡</span><h3>命令级按需启停</h3><p>只有命令真的需要代理时才启动,跑完按 PID 精确关闭,不动你手动开的实例。</p></div>
+      <div class="card"><span class="ico">🏁</span><h3>并发测速、自动钉最快</h3><p>64 线程测全部节点,把选择组沿链钉到最低延迟,并告诉你钉到了哪个节点。</p></div>
+      <div class="card"><span class="ico">🛟</span><h3>订阅整体挂掉自动切</h3><p>当前配置全灭时备份并切到备用配置;备用也不可用就还原重启,不至于断网。</p></div>
+    </div>
+  </section>
+
+  <section id="start">
+    <h2>三步上手</h2>
+    <div class="steps">
+      <div class="step"><div><b>装 FlClash</b>(安装版或便携版都行)</div><p>本工具只负责调度,不提供节点。没有节点可先 <code>px --buy</code> 找订阅入口。</p></div>
+      <div class="step"><div><b>一行安装本工具</b></div><p>上面的 PowerShell 命令;装完新开终端,<code>px</code> 即可用。</p></div>
+      <div class="step"><div><b>把 <code>px</code> 加在命令前面</b></div><p><code>px git pull</code> / <code>px pip install xxx</code> / <code>px --test</code> / <code>px --status</code>。</p></div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <h2>常见问题</h2>
+    <details><summary>会不会把我正在用的 FlClash 关掉?</summary><p>不会。自动关闭只针对本次由本工具启动的 PID;你手动开的实例不受影响。只有显式 <span class="kbd">--stop</span> 才按进程名全停。</p></details>
+    <details><summary>需要管理员权限吗?</summary><p>不需要。计划任务也注册在当前用户下,注册表只动当前用户的 Internet Settings。</p></details>
+    <details><summary>支持 macOS / Linux 吗?</summary><p>主体是 Windows。px.sh 可在 Git Bash 使用,但系统代理与进程管理依赖 Windows;其它平台请直接给 FlClash 开 TUN。</p></details>
+    <details><summary>会改我的系统代理吗?</summary><p>使用期间会设置,并在开始前快照、结束后还原;手动 <span class="kbd">--stop</span> 没有快照,只在残留仍指向 7890 时关闭开关。</p></details>
+    <details><summary>订阅内容会上传吗?</summary><p>不会。全程本地读写 FlClash 自己的配置,没有任何上报(除你主动执行的命令与测速请求)。</p></details>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap row">
+    <span>MIT © fool415</span>
+    <span>FlClash 为 GPL-3.0,本工具仅调度其本地 API,两者为独立作品</span>
+    <span style="flex:1"></span>
+    <a href="https://github.com/fool415/flclash-auto">GitHub</a>
+    <a href="https://github.com/fool415/flclash-auto/releases">Releases</a>
+    <a href="https://github.com/fool415/flclash-auto/issues">Issues</a>
+  </div>
+</footer>
+
+<script>
+document.querySelectorAll('.copy').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    var text = btn.getAttribute('data-copy') || '';
+    var done = function () { var o = btn.textContent; btn.textContent = '已复制'; setTimeout(function () { btn.textContent = o; }, 1200); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { fallback(text, done); });
+    } else { fallback(text, done); }
+    function fallback(t, cb) {
+      var ta = document.createElement('textarea');
+      ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); cb(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+  });
+});
+</script>
+</body>
+</html>
