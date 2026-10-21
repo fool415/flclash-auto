@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="470" viewBox="0 0 880 470" font-family="Consolas, 'Cascadia Mono', Menlo, monospace">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2030"/>
+      <stop offset="1" stop-color="#141824"/>
+    </linearGradient>
+    <style>
+      .t { font-size: 13.5px; dominant-baseline: text-before-edge; }
+      .dim { fill: #7d879c; }
+      .ok { fill: #6ee7a8; }
+      .warn { fill: #f2c14e; }
+      .err { fill: #ff7b72; }
+      .cmd { fill: #9ecbff; }
+      .txt { fill: #d6dbe7; }
+      .cy { fill: #7ee1f0; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="880" height="470" rx="12" fill="url(#bg)" stroke="#2c3346"/>
+
+  <!-- 标题栏 -->
+  <rect x="0" y="0" width="880" height="34" rx="12" fill="#232a3c"/>
+  <rect x="0" y="24" width="880" height="10" fill="#232a3c"/>
+  <circle cx="20" cy="17" r="5.5" fill="#ff5f57"/>
+  <circle cx="38" cy="17" r="5.5" fill="#febc2e"/>
+  <circle cx="56" cy="17" r="5.5" fill="#28c840"/>
+  <text x="440" y="11" text-anchor="middle" class="t dim">Git Bash — flclash-auto</text>
+
+  <!-- 第 1 段:命令模式自动启停 -->
+  <text x="24" y="54" class="t cmd">$ px git pull</text>
+  <text x="24" y="76" class="t dim">→ 直连不可用,自动启动 FlClash(界面不打扰)...</text>
+  <text x="24" y="98" class="t ok">✓ FlClash 就绪: mihomo 1.10.0 / 混合端口 7890 / 模式 rule</text>
+  <text x="24" y="120" class="t dim">→ 并发测速 29 个节点(64 线程,≤3s 超时)...</text>
+  <text x="24" y="142" class="t ok">✓ 已切换 [节点选择] → 🇭🇰Hong Kong 03  42ms</text>
+  <text x="24" y="164" class="t txt">Already up to date.</text>
+  <text x="24" y="186" class="t dim">→ 命令结束,关闭本次由本工具启动的 FlClash(按 PID 精确)</text>
+
+  <!-- 第 2 段:快路径 -->
+  <text x="24" y="224" class="t cmd">$ px --status</text>
+  <text x="24" y="246" class="t ok">✓ 当前节点可用(🇭🇰Hong Kong 03 42ms),直连无需加速</text>
+  <text x="24" y="268" class="t txt">模式/当前   : rule / [节点选择] → 🇭🇰Hong Kong 03</text>
+  <text x="24" y="290" class="t txt">节点数量    : 29</text>
+  <text x="24" y="312" class="t txt">系统代理    : 关闭</text>
+
+  <!-- 第 3 段:配置级故障切换 -->
+  <text x="24" y="350" class="t cmd">$ px --failover</text>
+  <text x="24" y="372" class="t warn">! 当前配置全部节点测速失败(29/29),复核 2 次后仍全灭</text>
+  <text x="24" y="394" class="t ok">✓ 已切换配置 → 备用订阅 A(香港B 54ms),prefs 已备份</text>
+  <text x="24" y="416" class="t dim">→ 旧配置不可用时自动还原并重启,保证不断网</text>
+
+  <!-- 光标 -->
+  <rect x="24" y="440" width="8" height="15" fill="#9ecbff">
+    <animate attributeName="opacity" values="1;0;1" dur="1.2s" repeatCount="indefinite"/>
+  </rect>
+</svg>

@@ -1,5 +1,17 @@
 # FlClash 按需代理启动器
 
+[![CI](https://github.com/fool415/flclash-auto/actions/workflows/ci.yml/badge.svg)](https://github.com/fool415/flclash-auto/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/fool415/flclash-auto?label=release&color=blue)](https://github.com/fool415/flclash-auto/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d6)](#)
+[![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](#)
+[![Python](https://img.shields.io/badge/python-3.8%2B-3776ab)](#)
+
+> **给命令加个 `px`:需要网络时才开代理,用完就关。**
+> `px git pull` —— 自动启动 FlClash、测速挑最快节点、跑完自动关掉,不常驻、不手点、不误杀。
+
+![命令模式 / 状态 / 配置级故障切换演示](./docs/demo.svg)
+
 > 中文文档在下方;[English documentation ↓](#english)
 
 > **依赖**：本工具是针对开源客户端 [FlClash](https://github.com/chen08209/FlClash)（GPL-3.0）的第三方命令行调度器，
@@ -7,6 +19,15 @@
 > 但本仓库的 GitHub Release 会附带官方 Windows 便携版，合规说明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
 访问网络需要代理时**自动启动 FlClash**,使用期间**并发测速自动切换最快节点**,当前订阅配置**整体不可用时自动切换备用配置**,命令结束后**自动关闭 FlClash**(仅当它是由本工具启动时,按 PID 精确关闭,不误杀其他实例)。
+
+## 为什么用它
+
+| 做法 | 代价 |
+|---|---|
+| FlClash 常驻 + 系统代理常开 | 开机自启、常吃内存;忘关就一直走代理,看视频/下大文件白耗流量 |
+| 需要时手动打开、用完手动关 | 每天十几次点击;忘了开就 `git push` 超时,忘了关就整机绕代理 |
+| 只用一个订阅 | 机场超售/被打时全灭,临时找订阅、改配置、重启客户端 |
+| **本工具(`px`)** | 命令级别**按需启停**;并发测速自动钉到最快节点;订阅整体不可用时**自动切备用配置并保住网络**;多个 `px` 并发时只有最后一个退出者关 FlClash |
 
 ## 快速使用
 
@@ -204,6 +225,33 @@ px <命令>
 - 巡检防抖:`--failover` 判死需要连续 `FLCLASH_FAILOVER_CONFIRM` 次(默认 2,间隔 5 秒,钳制 1..10)全部节点不可用才切换;FlClash 未运行时巡检直接跳过,不顺手拉起。命令模式的内嵌切换在全灭后只补探 1 次当前节点(两轮之间网络恢复时不白重启),不重复全量测速;若只是"改选节点失败"则仅重试一次改选,不切订阅。
 - `--failover-install` 注册的是当前用户级计划任务(无需管理员),用 `python`/`pythonw` 绝对路径执行不依赖 PATH,后台运行不闪控制台窗口;注册时会自动卸载旧版 PowerShell 巡检任务 `FlClash-ConfigFailover`(若存在)。巡检间隔按 1..1439 分钟夹取(schtasks 分钟任务的上限是 1439)。巡检日志空闲(FlClash 未运行)不写入,超过 2 MB 自动滚动归档为 `.1`。
 
+## 常见问题
+
+**会不会把我正在用的 FlClash 关掉?**
+不会。命令结束时的自动关闭只针对**本工具本次启动的 PID**;你自己的 FlClash(GUI 里手动开的)不会被碰。只有显式 `--stop` 才会按进程名全停。
+
+**需要管理员权限吗?**
+不需要。计划任务也是注册在当前用户下;注册表只动当前用户的 `Internet Settings`。
+
+**支持 macOS / Linux 吗?**
+主体是 Windows(注册表、进程、计划任务都走 Windows 接口)。`px.sh` 可以在 Git Bash/MSYS2 里用,但系统代理与进程管理部分依赖 Windows;其它平台请直接给 FlClash 开 TUN。
+
+**节点/订阅从哪来?**
+自备。本工具只负责调度 FlClash,不提供节点、不碰账号;`--buy` 只是打开第三方订阅服务的注册页,购买前请自行评估。
+
+**会不会改我的系统代理设置?**
+使用期间会设置,并**在开始前快照、结束后还原**(ProxyEnable/ProxyServer/ProxyOverride)。手动 `--stop` 没有快照,只在残留仍指向 7890 时关闭开关。
+
+**订阅内容会被上传吗?**
+不会。全程本地:读的是 FlClash 自己的数据目录,改的是它自己的配置文件,没有任何网络上报(除了你主动执行的命令与测速请求)。
+
+**能不能只用一个开关,不要命令行?**
+可以给 `px` 建快捷方式/别名;也可以把 `--failover-install 15` 注册成计划任务,让它在后台每 15 分钟巡检一次订阅健康。
+
+---
+
+如果这个项目刚好解决了你的问题,点个 ⭐ **Star** 能让更多被"代理常驻/忘记开关"折磨的人搜到它。遇到问题或有新场景,欢迎开 Issue。
+
 ## 换机 / 需要按机器调整的点
 
 | 项 | 说明 |
@@ -236,6 +284,13 @@ Release 附带的 FlClash 便携版为官方原版二进制:本仓库不修改�
 **FlClash On-Demand Proxy Launcher** — a small Windows command-line wrapper around the open-source [FlClash](https://github.com/chen08209/FlClash) client (GPL-3.0). It starts FlClash only when you actually need a proxy, picks the fastest node, runs your command, then closes FlClash again.
 
 > FlClash itself is **not** bundled in this repository's source. The GitHub Release also ships the official Windows portable build, see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+
+### Why
+
+- **No always-on client.** Nothing is resident between commands: FlClash is started for your command and closed afterwards (only if this tool started it).
+- **No clicking.** It finds and pins the fastest node for you, and names the node it picked so you can see what you got.
+- **Survives a dead subscription.** If every node in the current config fails, it backs up and switches to another profile, then rolls back if that one is unusable too — instead of leaving you offline.
+- **Safe with parallel work.** Several `px` runs share one FlClash instance; only the last holder shutting down closes it.
 
 ### What it does
 
@@ -375,6 +430,10 @@ acceleration off**, so no hosts entries are left behind.
 - Environment-variable proxying works for `curl`, `git`, `pip`, `npm`, etc.; GUI apps that ignore env vars need FlClash's system-proxy or TUN mode.
 - `--buy` only opens a URL in your default browser; it never logins, pays, or fetches your subscription.
 - The two built-in entries are just link constants (site + invite code) — no credentials. Clear the default one with `FLCLASH_INVITE_CODE=`.
+
+### Star
+
+If this saved you from an always-on proxy, a ⭐ **Star** helps other people fighting the same "forgot to turn it on / forgot to turn it off" problem find it. Issues and real-world scenarios are welcome.
 
 ### License
 
