@@ -6,7 +6,7 @@
 > 需要本机已安装 FlClash（安装版或便携版均可）。FlClash 本体**不打包在本仓库源码内**，
 > 但本仓库的 GitHub Release 会附带官方 Windows 便携版，合规说明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
-访问网络需要代理时**自动启动 FlClash**,使用期间**并发测速自动切换最快节点**,命令结束后**自动关闭 FlClash**(仅当它是由本工具启动时,按 PID 精确关闭,不误杀其他实例)。
+访问网络需要代理时**自动启动 FlClash**,使用期间**并发测速自动切换最快节点**,当前订阅配置**整体不可用时自动切换备用配置**,命令结束后**自动关闭 FlClash**(仅当它是由本工具启动时,按 PID 精确关闭,不误杀其他实例)。
 
 ## 快速使用
 
@@ -121,6 +121,9 @@ px <命令>
  ├─ 5. 通过 Clash API 并发测速全部节点(过滤"剩余流量/到期时间"等信息节点):
  │     global 模式沿 Selector 链展开 GLOBAL(支持 GLOBAL 直接挂子分组的订阅),
  │     逐级切换到延迟最低的节点;rule 模式自动识别主选择组
+ │     └─ 全部节点测速失败(配置整体判死)→ 自动切换到备用订阅配置:
+ │        备份并改写 FlClash 配置指针(先完全退出再改,防覆写)→ 重启 → 重新测速;
+ │        备用配置也全灭则还原原配置并重启,保证不断网(--no-failover 可关闭)
  ├─ 6. 以 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY=127.0.0.1:7890 执行命令,透传退出码;
  │     Ctrl+C 中断时会先结束子进程再关闭 FlClash
  └─ 7. 命令结束:FlClash 若是本工具启动的 → 按 PID 精确结束进程并把系统代理注册表
@@ -140,11 +143,17 @@ px <命令>
 | `px --keep <命令>` | 执行后保持 FlClash 运行,不自动关闭 |
 | `px --force <命令>` | 跳过直连检测,强制走代理(与 `--direct` 互斥) |
 | `px --direct <命令>` | 强制直连,不走代理(与 `--force` 互斥) |
-| `px --timeout-ms 8000 <命令>` | 单节点测速超时毫秒数(默认 3000) |
+| `px --timeout-ms 8000 <命令>` | 单节点测速超时毫秒数(默认 3000;超出 500–30000 自动夹到边界并提示) |
 | `px --strict <命令>` | 测速/切换失败时中止命令(默认降级为以当前节点执行) |
 | `px --no-speedtest <命令>` | 不测速,沿用当前节点 |
 | `px --group 节点选择 <命令>` | 指定目标代理组(默认自动判断) |
 | `px --canary <URL> <命令>` | 自定义直连探测地址 |
+| `px --profiles` | 列出 FlClash 全部订阅配置及健康状态 |
+| `px --failover` | 单次故障切换巡检(当前配置判死则自动切备用配置) |
+| `px --switch other` | 手动切换订阅配置(other=最近更新的备用配置,也可用配置 id) |
+| `px --failover-install [分钟]` | 注册定时巡检计划任务(默认 15 分钟;取代旧版 PS1 巡检任务) |
+| `px --failover-remove` | 删除巡检计划任务 |
+| `px --no-failover <命令>` | 当前配置节点全灭时不自动切换其他订阅配置 |
 
 > **命令参数带 `-` 开头的说明**:命令第一个参数之后的 `--xxx` 会原样传给命令(如 `px curl --test` 没问题);仅当命令**首参数**本身以 `-` 开头时,用 `--` 显式分隔:`px -- -my-tool --flag`。
 
@@ -160,7 +169,10 @@ px <命令>
 | `FLCLASH_TESTURL` | `https://www.gstatic.com/generate_204` | 节点测速地址 |
 | `FLCLASH_START_TIMEOUT` | `45` | 启动就绪等待秒数 |
 | `FLCLASH_DELAY_MS` | `3000` | 单节点测速超时毫秒 |
-| `FLCLASH_ABORT_ON_PORT_CONFLICT` | 未设置 | 设为 `1` 时,7890 被非 FlClash 程序占用直接中止(默认仅警告) |
+| `FLCLASH_DATA` | `%APPDATA%\com.follow\clash` | FlClash 数据目录(profiles 与配置指针所在) |
+| `FLCLASH_FAILOVER_LOG` | `%LOCALAPPDATA%\FlClash-Failover\failover.log` | 故障切换巡检日志 |
+| `FLCLASH_FAILOVER_CONFIRM` | `2` | 巡检连续几次判死才真正切换(防机场瞬时抖动,钳制 1..10) |
+| `FLCLASH_ALLOW_PORT_CONFLICT` | 未设置 | 7890 被非 FlClash 程序占用时默认中止;设为 `1` 放行(自担风险) |
 | `FLCLASH_BUY_URL` | `https://114514-sakuracat.com` | 默认入口(sakura)的购买地址 |
 | `FLCLASH_INVITE_CODE` | `10spAT6Z` | 默认入口(sakura)的邀请码,拼成 `/register?code=<邀请码>`;设为空则不带 |
 | `FLCLASH_DEBUG` | 未设置 | 设为 `1` 时输出 API 调用失败详情到 stderr |
@@ -176,16 +188,21 @@ px <命令>
 ## 说明与限制
 
 - 依赖 Python 3(仅标准库;`px.sh`/`px.cmd` 会在找不到 `python` 时回退 `py -3`)。
+- 测试:`tests/` 是离线测试套件(纯 mock + 合成数据,不启动 FlClash、不联网、不读本机真实配置),`python -B tests/run_all.py` 一键运行;push/PR 会触发 CI 在 windows-latest 上执行。
 - 停止策略:命令结束自动关闭时**只结束本工具启动的 PID**;手动 `--stop` 才按进程名全停。FlClashHelperService 服务本身保留,不影响下次启动。
 - **并发安全**:多个 `px` 同时运行时通过 `%TEMP%\flclash_proxy.lock` 做存活持有者计数,只有最后一个退出的实例才会关闭 FlClash(持有者按 PID 校验存活,崩溃实例的残留记录会被自动清理)。锁文件本身异常时按保守策略不关 FlClash并提示,可手动 `--stop`。
 - 系统代理注册表:启动前快照、停止后还原(ProxyEnable/ProxyServer/ProxyOverride 三项;快照中不存在的项会删除还原)。手动 `--stop` 无快照,仅在残留指向 7890 时关闭开关。
 - 复用现有 FlClash 时,若 7890 未监听(如界面里关了系统代理),工具会临时打开该端口并在命令结束后还原(仍有其他实例使用时不还原)。
-- 端口占用:7890 被非 FlClash 程序监听时给出警告;设 `FLCLASH_ABORT_ON_PORT_CONFLICT=1` 可改为直接中止。
+- 端口占用:7890 被非 FlClash 程序监听时**默认中止**(继续执行会让命令流量进入未知程序);确知占用无害时设 `FLCLASH_ALLOW_PORT_CONFLICT=1` 放行。
 - 核心进程存在但控制 API 无响应(卡死/残留)时快速失败并建议 `--stop` 清理,不做 45 秒无效等待。
 - 启动子进程时会剔除 `ELECTRON_RUN_AS_NODE`,避免从 Electron 系宿主(如某些终端/IDE)调用时 FlClash 静默启动失败。
 - 环境变量方式对 `curl/git/pip/npm` 等绝大多数命令行工具生效;不读取环境变量的图形程序请用 FlClash 的系统代理/TUN 模式。
 - 购买入口(`--buy` / 缺节点提示)只读地址、只开浏览器,不涉及账号登录、支付或订阅抓取;订阅链接仍需你在 FlClash 里手动导入。
 - 内置的两个购买入口只是链接常量(站点 + 邀请码),不含任何账号信息;不想带邀请码可用 `FLCLASH_INVITE_CODE=` 清掉默认入口那一个。
+- **配置级故障切换**:FlClash 的配置列表在 `FLCLASH_DATA` 的 `profiles\`,当前配置指针记录在 `shared_preferences.json`。切换配置必须先完全退出 FlClash 再改指针(退出时它会用内存覆写该文件),因此切换会重启 FlClash 界面一次。改写前自动备份,全部备用配置不可用时自动还原原配置并重启,保证不断网;其他 `px` 实例正在共用 FlClash 时拒绝切换以免打断。
+- **切换的判定口径**:只有"默认组下全部节点测速失败"才算订阅判死。指定了 `--group` 时组级全灭**不会**触发配置切换(用户钉住的组临时不可用 ≠ 订阅死亡,新订阅里也未必有同名组);控制 API 无响应、组不存在、组下无可测速节点同样只算"无法判定"。组里只挂自动组(URLTest/Fallback/LoadBalance)时,不逐个测速其成员,而是整组切到自动组由它自选最快(global/rule 均生效);巡检快路径会探测自动组当前选中的叶子节点。
+- 巡检防抖:`--failover` 判死需要连续 `FLCLASH_FAILOVER_CONFIRM` 次(默认 2,间隔 5 秒,钳制 1..10)全部节点不可用才切换;FlClash 未运行时巡检直接跳过,不顺手拉起。命令模式的内嵌切换在全灭后只补探 1 次当前节点(两轮之间网络恢复时不白重启),不重复全量测速;若只是"改选节点失败"则仅重试一次改选,不切订阅。
+- `--failover-install` 注册的是当前用户级计划任务(无需管理员),用 `python`/`pythonw` 绝对路径执行不依赖 PATH,后台运行不闪控制台窗口;注册时会自动卸载旧版 PowerShell 巡检任务 `FlClash-ConfigFailover`(若存在)。巡检间隔按 1..1439 分钟夹取(schtasks 分钟任务的上限是 1439)。巡检日志空闲(FlClash 未运行)不写入,超过 2 MB 自动滚动归档为 `.1`。
 
 ## 换机 / 需要按机器调整的点
 

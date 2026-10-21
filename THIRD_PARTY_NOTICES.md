@@ -21,6 +21,8 @@ FlClash 是 [chen08209](https://github.com/chen08209) 开发的开源软件，�
 方便用户一步到位地使用本工具。该资产：
 
 - 直接取自 FlClash 官方 [Releases](https://github.com/chen08209/FlClash/releases)，**未做任何修改**；
+- **版本钉定**：Release 工作流按钉住的版本号下载（见 `.github/workflows/release.yml` 的 `FLCLASH_TAG`），
+  同一 tag 重跑资产内容不随上游 `latest` 漂移；随附 `<zip 名>.sha256` 校验文件，下载后可核对完整性；
 - 版权归 FlClash 项目原作者所有，遵循 GPL-3.0 许可证；
 - 对应完整源码可在上述官方仓库获取。
 

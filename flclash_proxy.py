@@ -21,10 +21,16 @@ FlClash 按需代理启动器
   python flclash_proxy.py --force pip install xxx           # 跳过直连检测,强制走代理
   python flclash_proxy.py --direct git pull                 # 强制直连
   python flclash_proxy.py --timeout-ms 8000 git pull        # 放宽节点测速超时
+  python flclash_proxy.py --profiles                        # 列出全部订阅配置及健康状态
+  python flclash_proxy.py --failover                        # 单次巡检:配置判死则自动切换
+  python flclash_proxy.py --switch other                    # 手动切换订阅配置
+  python flclash_proxy.py --failover-install                # 注册每 15 分钟巡检计划任务
+  python flclash_proxy.py --failover-remove                 # 删除巡检计划任务
 
 环境变量(可选):FLCLASH_EXE / FLCLASH_API / FLCLASH_SECRET / FLCLASH_PORT /
                FLCLASH_CANARY / FLCLASH_TESTURL / FLCLASH_START_TIMEOUT /
-               FLCLASH_DELAY_MS / FLCLASH_DEBUG(设为 1 输出 API 调试日志) /
+               FLCLASH_DELAY_MS / FLCLASH_DATA / FLCLASH_FAILOVER_LOG /
+               FLCLASH_FAILOVER_CONFIRM / FLCLASH_DEBUG(设为 1 输出 API 调试日志) /
                FLCLASH_BUY_URL(默认入口 sakura 的购买地址,默认 https://114514-sakuracat.com) /
                FLCLASH_INVITE_CODE(默认入口 sakura 的邀请码,默认 10spAT6Z;设为空则不追加 ?code=)
                ——内置两个购买入口:sakura(?code=)与 kitty(?invite=),见 README
@@ -35,9 +41,9 @@ import csv
 import ctypes
 import io
 import json
-import msvcrt
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -46,31 +52,83 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+if os.name != "nt":
+    # 依赖 msvcrt 文件锁 / winreg 注册表 / Windows 任务计划程序,仅支持 Windows;
+    # 在 import msvcrt 崩出 traceback 之前先给人话提示
+    print("!! 本工具仅支持 Windows(msvcrt/winreg/任务计划程序),当前平台: %s"
+          % os.name, file=sys.stderr)
+    sys.exit(1)
+
+import msvcrt
 import winreg
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 # ---------------- 可配置项(环境变量可覆盖) ----------------
-FLCLASH_EXE = os.environ.get("FLCLASH_EXE", r"C:\Program Files\FlClash\FlClash.exe")
+# 路径类配置统一经 abspath 规范化,消除 ../ 等相对成分
+FLCLASH_EXE = os.path.abspath(os.environ.get("FLCLASH_EXE", r"C:\Program Files\FlClash\FlClash.exe"))
 API_BASE = os.environ.get("FLCLASH_API", "http://127.0.0.1:9090").rstrip("/")
 API_SECRET = os.environ.get("FLCLASH_SECRET", "")
-PROXY_PORT = int(os.environ.get("FLCLASH_PORT", "7890"))
+
+
+def _env_int(name, default):
+    """整数型环境变量:非法值回退默认并 stderr 提示,
+    不让一个写错的变量把整个工具在 import 期就崩掉(计划任务会静默失效)"""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print("!! 环境变量 %s=%r 不是整数,使用默认值 %s" % (name, raw, default),
+              file=sys.stderr)
+        return default
+
+
+PROXY_PORT = _env_int("FLCLASH_PORT", 7890)
 CANARY = os.environ.get("FLCLASH_CANARY", "https://www.google.com/generate_204")
 TEST_URL = os.environ.get("FLCLASH_TESTURL", "https://www.gstatic.com/generate_204")
-START_TIMEOUT = int(os.environ.get("FLCLASH_START_TIMEOUT", "45"))
-DELAY_TIMEOUT_MS = int(os.environ.get("FLCLASH_DELAY_MS", "3000"))
+START_TIMEOUT = _env_int("FLCLASH_START_TIMEOUT", 45)
+DELAY_TIMEOUT_MS = _env_int("FLCLASH_DELAY_MS", 3000)
 DEBUG = bool(os.environ.get("FLCLASH_DEBUG"))
 # 订阅购买入口:本工具不提供节点,节点/订阅由用户自备
 BUY_URL = os.environ.get("FLCLASH_BUY_URL", "https://114514-sakuracat.com").rstrip("/")
 # 默认邀请码:--buy 打开注册页时自动带上;设 FLCLASH_INVITE_CODE= 空值可关闭
 INVITE_CODE = os.environ.get("FLCLASH_INVITE_CODE", "10spAT6Z").strip()
 
+# FlClash 数据目录(shared_preferences.json / profiles/),便携版或自定义安装可能不同。
+# 路径一律在源头做规范化(abspath 折叠 ../ 等相对成分)后再使用。
+DATA_DIR = os.path.abspath(
+    os.environ.get("FLCLASH_DATA")
+    or os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"),
+                    "com.follow", "clash"))
+# 故障切换巡检日志(每次 --failover 追加一段)
+FAILOVER_LOG = os.path.abspath(
+    os.environ.get("FLCLASH_FAILOVER_LOG")
+    or os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(),
+                    "FlClash-Failover", "failover.log"))
+# 巡检判死所需的连续确认次数(防机场瞬时抖动导致反复重启 FlClash);
+# 钳制在 1..10:设得过大等于拿着持有者锁睡几分钟,会卡住其他 px 的收尾
+_fc_raw = _env_int("FLCLASH_FAILOVER_CONFIRM", 2)
+FAILOVER_CONFIRM = max(1, min(10, _fc_raw))
+if FAILOVER_CONFIRM != _fc_raw:
+    print("!! FLCLASH_FAILOVER_CONFIRM=%s 超出 1..10 范围,已按 %d 处理"
+          % (_fc_raw, FAILOVER_CONFIRM), file=sys.stderr)
+# 本工具注册的巡检计划任务名;LEGACY 是被本工具取代的旧 PowerShell 版任务
+FAILOVER_TASK_NAME = "FlClash-Failover"
+LEGACY_TASK_NAMES = ("FlClash-ConfigFailover",)
+
 GROUP_TYPES = {"Selector", "URLTest", "Fallback", "LoadBalance"}
-SELECTABLE_TYPES = {"Selector"}  # 只有 Selector 支持通过 API 手动切换
+SELECTABLE_TYPES = {"Selector"}  # 只有 Selector 支持通过 API 手动切换;
+# URLTest/Fallback/LoadBalance 是自动组:不能把它们的成员钉到父组,但整组可以切
+AUTO_GROUP_TYPES = GROUP_TYPES - SELECTABLE_TYPES
 BUILTIN_TYPES = GROUP_TYPES | {"Direct", "Reject", "RejectDrop", "PassRule", "Compatible", "Pass"}
 FLCLASH_PROC_NAMES = ("FlClash.exe", "FlClashCore.exe")
-# 订阅面板常见的"信息节点"(剩余流量/到期时间等),不参与测速
-INFO_NODE_PAT = re.compile(r"剩余流量|套餐到期|到期时间|流量重置|官网|过期时间|群组|下次重置|剩余天数|距离下次")
+# 订阅面板常见的"信息节点"(剩余流量/到期时间等),不参与测速。
+# 只保留强特征词:宽松词(如"官网/群组")会误伤 HK-官网专线、群组A-01 这类真实节点
+INFO_NODE_PAT = re.compile(r"剩余流量|套餐到期|到期时间|流量重置|下次重置|剩余天数|距离下次")
 
 REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 INTERNET_OPTION_SETTINGS_CHANGED = 39
@@ -258,13 +316,18 @@ def holders_release():
 
 
 def check_port_conflict():
-    """7890 被非 FlClash 程序占用时提醒(端口在监听但控制 API 无响应)。
-    返回 False 表示应中止;设 FLCLASH_ABORT_ON_PORT_CONFLICT=1 时占用即中止。"""
+    """7890 被非 FlClash 程序占用时(端口在监听但控制 API 无响应)默认中止:
+    继续执行的话命令流量会全部导向那个未知程序。确知占用无害时设
+    FLCLASH_ALLOW_PORT_CONFLICT=1 放行(旧变量 FLCLASH_ABORT_ON_PORT_CONFLICT
+    已废弃——默认行为已改为中止)。"""
     if port_open(PROXY_PORT) and not core_up():
-        print("!! 警告:端口 %d 已被非 FlClash 进程监听,命令的代理流量会导向该未知程序" % PROXY_PORT)
-        if os.environ.get("FLCLASH_ABORT_ON_PORT_CONFLICT"):
-            print("!! 已按 FLCLASH_ABORT_ON_PORT_CONFLICT=1 中止执行")
-            return False
+        print("!! 端口 %d 已被非 FlClash 进程监听,继续执行会让命令流量进入该未知程序"
+              % PROXY_PORT)
+        if os.environ.get("FLCLASH_ALLOW_PORT_CONFLICT"):
+            print("→ 已按 FLCLASH_ALLOW_PORT_CONFLICT=1 继续(自担风险)")
+            return True
+        print("!! 已中止;确知该端口占用无害时,可设 FLCLASH_ALLOW_PORT_CONFLICT=1 放行")
+        return False
     return True
 
 
@@ -446,14 +509,25 @@ def stop_flclash(our_pids=None):
             subprocess.run(["taskkill", "/F", "/T", "/IM", exe],
                            capture_output=True, text=True, errors="replace")
     t0 = time.time()
-    while time.time() - t0 < 10:
-        if not port_open(PROXY_PORT) and not port_open(api_port()):
-            break
+    if our_pids:
+        # 只结束本工具启动的实例:成功判据是"这些 PID 都没了"。
+        # 端口可能被别的程序(甚至另一个 FlClash)占着,拿端口当判据会白等
+        # 10 秒,再误报"仍有进程存活"。
+        while time.time() - t0 < 10 and (snapshot_pids() & set(our_pids)):
+            time.sleep(0.5)
+        leftover = bool(snapshot_pids() & set(our_pids))
+        fix_system_proxy_after_stop()
+        # 进程退出后内核端口释放有一小段延迟,给下一个 px 让路(最多让 2 秒,
+        # 端口被别的程序占着也不会卡住)
+        t1 = time.time()
+        while time.time() - t1 < 2 and port_open(PROXY_PORT):
+            time.sleep(0.25)
+        return not leftover
+    while time.time() - t0 < 10 and snapshot_pids():
         time.sleep(0.5)
     ports_closed = not port_open(PROXY_PORT) and not port_open(api_port())
     fix_system_proxy_after_stop()
-    leftover = bool(our_pids and (snapshot_pids() & set(our_pids)))
-    return ports_closed and not leftover
+    return ports_closed and not snapshot_pids()
 
 
 def ensure_inbound():
@@ -504,6 +578,10 @@ def ensure_core():
     if not start_flclash():
         return False, False, None
     our_pids = snapshot_pids() - before
+    if not our_pids:
+        # tasklist 慢一步或与另一个 px 同时启动时差集可能为空;绝不能把空集合
+        # 交给 stop_flclash(那会退化成按镜像名全杀,可能误杀别人的实例)
+        our_pids = snapshot_pids()
     print("✓ FlClash 已启动 (pid: %s)" % fmt_pids(our_pids))
     return True, True, our_pids
 
@@ -550,7 +628,9 @@ def pick_target_group(proxies, mode, override=None):
 def collect_candidates(proxies, root):
     """自 root 组沿 Selector 链(可手动切换的组)向下展开,返回
     {节点名: 选择链},选择链 = [root, ..., 节点直属组],用于逐级 PUT 切换。
-    覆盖 global 模式下 GLOBAL 直接挂子分组、节点藏在多层组里的情况。"""
+    自动组(URLTest/Fallback/LoadBalance)不下钻:其成员不是父组成员,
+    直接 PUT 会报错;组里只挂自动组的订阅由 select_fastest 的兜底整组切过去。
+    覆盖 global 模式下 GLOBAL 直接挂子分组、节点藏在多层 Selector 里的情况。"""
     result = {}
     visited = {root}
     queue = deque([(root, [root])])
@@ -573,8 +653,11 @@ def collect_candidates(proxies, root):
 
 
 def auto_group_in(proxies, root):
+    """root 下第一个自动组(URLTest/Fallback/LoadBalance),用于"组里只挂自动组"
+    时整组切过去。三种都算:LoadBalance 同属自动组,漏掉会让这类订阅永远
+    停在 no-candidate(既不修复也不切换)"""
     for m in proxies.get(root, {}).get("all", []):
-        if proxies.get(m, {}).get("type") in ("URLTest", "Fallback"):
+        if proxies.get(m, {}).get("type") in AUTO_GROUP_TYPES:
             return m
     return None
 
@@ -589,11 +672,48 @@ def test_node(name, timeout_ms):
     return name, None
 
 
+# select_fastest 最近一次结果的摘要,供 embedded_failover 判断是否复用
+# (刚全量测速全灭时,不必再扫一遍同样的节点)
+_last_scan = {"reason": "none"}
+# switch_profile 本次进程内是否重启过 FlClash(含全部失败后的回滚重启);
+# do_run 收尾据此刷新 PID 集并复位端口补丁,避免留下没人管的实例
+_switch_restarted = False
+
+
+def _note_scan(reason, **extra):
+    global _last_scan
+    _last_scan = {"reason": reason}
+    _last_scan.update(extra)
+
+
+def scan_nodes(cands, timeout_ms):
+    """并发测速,返回 {节点名: 延迟 ms 或 None}。
+    64 并发:节点多的机场按 16 并发会线性吃掉巡检窗口(500 节点 ≈ 94 秒)"""
+    results = {}
+    with ThreadPoolExecutor(max_workers=min(64, max(1, len(cands)))) as ex:
+        futs = [ex.submit(test_node, n, timeout_ms) for n in cands]
+        for f in as_completed(futs):
+            n, d = f.result()
+            results[n] = d
+    return results
+
+
+def switch_by_chain(cands, node):
+    """沿选择链(cands[node] + [node],root → ... → 直属组 → 节点)逐级 PUT 切换"""
+    seq = cands[node] + [node]
+    for i in range(len(seq) - 1):
+        if api("PUT", "/proxies/%s" % urllib.parse.quote(seq[i], safe=""),
+               {"name": seq[i + 1]}) is None:
+            return False
+    return True
+
+
 def select_fastest(timeout_ms=DELAY_TIMEOUT_MS, group_override=None):
     """并发测速目标组可达的全部节点,沿选择链自动切换到延迟最低的节点"""
     proxies = get_proxies()
     if not proxies:
         print("!! 无法获取代理信息(外部控制 API 无响应)")
+        _note_scan("api-no-proxies")
         return None
     mode = get_mode()
     if mode is None:
@@ -602,31 +722,29 @@ def select_fastest(timeout_ms=DELAY_TIMEOUT_MS, group_override=None):
     root = pick_target_group(proxies, mode, group_override)
     if root not in proxies:
         print("!! 分组 [%s] 不存在(用 --group 指定其他分组)" % root)
+        _note_scan("no-group")
         return None
 
     cands = collect_candidates(proxies, root)
     if not cands:
         if real_node_count(proxies) == 0:
             print_buy_hint("当前配置里没有任何节点(可能还没购买/导入订阅)")
-        # 兜底:global 模式下无可手动切换的节点时,切到自动测速组(URLTest 自选最快)
-        if mode == "global":
-            auto = auto_group_in(proxies, root)
-            if auto:
-                r = api("PUT", "/proxies/%s" % urllib.parse.quote(root, safe=""),
-                        {"name": auto})
-                if r is not None:
-                    print("✓ [%s] 无可手动切换的节点,已切换到自动测速组 [%s]" % (root, auto))
-                    return auto
+        # 兜底:无可手动切换的叶子节点时(组里只挂 URLTest/Fallback/LoadBalance 自动组),
+        # 整组切到自动组让它自选最快——global/rule 模式通用
+        auto = auto_group_in(proxies, root)
+        if auto:
+            r = api("PUT", "/proxies/%s" % urllib.parse.quote(root, safe=""),
+                    {"name": auto})
+            if r is not None:
+                print("✓ [%s] 无可手动切换的节点,已切换到自动测速组 [%s]" % (root, auto))
+                _note_scan("switched-to-auto-group", node=auto)
+                return auto
         print("!! 分组 [%s] 下没有可测速的节点" % root)
+        _note_scan("no-candidates")
         return None
 
     print("→ 测速 %d 个节点(分组: %s,模式: %s)..." % (len(cands), root, mode))
-    results = {}
-    with ThreadPoolExecutor(max_workers=min(16, len(cands))) as ex:
-        futs = [ex.submit(test_node, n, timeout_ms) for n in cands]
-        for f in as_completed(futs):
-            n, d = f.result()
-            results[n] = d
+    results = scan_nodes(cands, timeout_ms)
 
     ok = sorted((d, n) for n, d in results.items() if d)
     for d, n in ok:
@@ -638,15 +756,17 @@ def select_fastest(timeout_ms=DELAY_TIMEOUT_MS, group_override=None):
 
     if not ok:
         print("!! 所有节点测速失败")
+        _note_scan("all-dead", total=len(results), alive=0)
         return None
     best_delay, best = ok[0]
-    seq = cands[best] + [best]  # root → ... → 直属组 → 节点
-    for i in range(len(seq) - 1):
-        if api("PUT", "/proxies/%s" % urllib.parse.quote(seq[i], safe=""),
-               {"name": seq[i + 1]}) is None:
-            print("!! 切换节点失败(可设置 FLCLASH_DEBUG=1 查看原因)")
-            return None
-    print("✓ 最快节点: %s(%d ms)→ 切换路径: %s" % (best, best_delay, " → ".join(seq)))
+    if not switch_by_chain(cands, best):
+        print("!! 切换节点失败(可设置 FLCLASH_DEBUG=1 查看原因)")
+        _note_scan("switch-failed", total=len(results), alive=len(ok),
+                   node=best, cands=cands)
+        return None
+    _note_scan("scanned-ok", total=len(results), alive=len(ok), node=best)
+    print("✓ 最快节点: %s(%d ms)→ 切换路径: %s" % (
+        best, best_delay, " → ".join(cands[best] + [best])))
     return best
 
 
@@ -726,7 +846,330 @@ def cmd_buy(key=None):
     return 0
 
 
+# ---------------- 订阅配置(profile)管理 ----------------
+# FlClash 的配置列表存在数据目录:profiles\<id>.yaml,当前启用的配置 id 记录在
+# shared_preferences.json 的 flutter.config(一层嵌套 JSON 字符串)的 currentProfileId。
+# 切换配置必须先完全退出 FlClash 再改文件:它退出时会用内存里的设置覆写该文件。
+PROFILE_LABEL_PAT = re.compile(
+    r"官网[:：]\s*([^\s,'\"\]\}]+)|导航页[:：]\s*([^\s,'\"\]\}]+)")
+
+
+def prefs_path():
+    return os.path.join(DATA_DIR, "shared_preferences.json")
+
+
+def read_prefs():
+    with open(prefs_path(), "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def read_flutter_config(root=None):
+    """prefs 根对象里的 flutter.config 是一层嵌套的 JSON 字符串"""
+    root = read_prefs() if root is None else root
+    raw = root.get("flutter.config")
+    if raw is None:
+        raise KeyError("prefs 里没有 flutter.config")
+    return json.loads(raw) if isinstance(raw, str) else raw
+
+
+def get_current_profile_id():
+    return read_flutter_config().get("currentProfileId")
+
+
+def _under_data_dir(path):
+    """路径规范化后必须仍位于 DATA_DIR 内,拒绝任何越界读写"""
+    base = os.path.abspath(DATA_DIR)
+    target = os.path.abspath(path)
+    return os.path.commonpath([base, target]) == base
+
+
+def backup_prefs():
+    """把当前 prefs 备份到数据目录内(时间戳精确到毫秒,同秒多次切换不互相覆盖)"""
+    stamp = "%s-%03d" % (time.strftime("%Y%m%d-%H%M%S"),
+                         int(time.time() * 1000) % 1000)
+    dst = os.path.join(DATA_DIR, "shared_preferences.bak-%s.json" % stamp)
+    n = 1
+    while os.path.exists(dst):  # 极端并发下同毫秒撞名时追加序号
+        n += 1
+        dst = os.path.join(DATA_DIR, "shared_preferences.bak-%s-%d.json" % (stamp, n))
+    if not _under_data_dir(dst):
+        raise ValueError("备份路径越界: %s" % dst)
+    shutil.copyfile(prefs_path(), dst)
+    return dst
+
+
+def write_prefs(root):
+    """原子写回 prefs:先写临时文件再 os.replace,避免 FlClash 读到半截 JSON。
+    写入目标经校验必须位于 DATA_DIR 内。"""
+    target = prefs_path()
+    if not _under_data_dir(target):
+        raise ValueError("写入目标越界: %s" % target)
+    tmp = os.path.join(DATA_DIR, ".shared_preferences.tmp")
+    text = json.dumps(root, ensure_ascii=False, separators=(",", ":"))
+    Path(tmp).write_text(text, encoding="utf-8")
+    os.replace(tmp, target)
+
+
+def restore_prefs(backup):
+    """把 prefs 还原到指定备份文件(切换全部失败时回滚用);来源与目标都必须在
+    数据目录内。与 write_prefs 对称地走 tmp+os.replace 原子写——回滚发生在
+    "新配置已切坏、正在抢救"的时刻,最怕半截文件;逐字节还原原文,不经 JSON 重序列化。"""
+    if not _under_data_dir(prefs_path()):
+        raise ValueError("还原目标越界: %s" % prefs_path())
+    if not _under_data_dir(backup):
+        raise ValueError("备份来源越界: %s" % backup)
+    text = Path(backup).read_text(encoding="utf-8")
+    tmp = os.path.join(DATA_DIR, ".shared_preferences.tmp")
+    Path(tmp).write_text(text, encoding="utf-8")
+    os.replace(tmp, prefs_path())
+
+
+def set_current_profile_id(profile_id):
+    """只改 flutter.config 里的 currentProfileId,其余键原样保留。
+    写入前先备份,返回备份路径(供切换失败时还原)。"""
+    root = read_prefs()
+    cfg = read_flutter_config(root)
+    cfg["currentProfileId"] = profile_id
+    root["flutter.config"] = json.dumps(cfg, ensure_ascii=False, separators=(",", ":"))
+    backup = backup_prefs()
+    write_prefs(root)
+    return backup
+
+
+def wait_prefs_settled(timeout=5.0):
+    """等 FlClash 退出时对 prefs 的残余覆写落完(以 mtime 稳定为准)"""
+    try:
+        last = os.path.getmtime(prefs_path())
+    except OSError:
+        return
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        time.sleep(0.25)
+        try:
+            now = os.path.getmtime(prefs_path())
+        except OSError:
+            return
+        if now == last:
+            return
+        last = now
+
+
+def profile_label(yaml_path, fallback):
+    """机场配置通常在节点名里自带 官网/导航页 字样,拿来当人话名字"""
+    try:
+        with open(yaml_path, "r", encoding="utf-8", errors="replace") as f:
+            m = PROFILE_LABEL_PAT.search(f.read())
+        if m and (m.group(1) or m.group(2)):
+            return m.group(1) or m.group(2)
+    except OSError:
+        pass
+    return fallback
+
+
+def list_profiles():
+    """profiles 目录下的全部订阅配置:[{id, path, updated, label}],按更新时间倒序"""
+    pdir = os.path.join(DATA_DIR, "profiles")
+    out = []
+    for name in os.listdir(pdir):
+        if not name.endswith(".yaml"):
+            continue
+        path = os.path.join(pdir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            pid = int(name[:-5])
+        except ValueError:
+            continue
+        out.append({"id": pid, "path": path, "updated": os.path.getmtime(path),
+                    "label": profile_label(path, name[:-5])})
+    out.sort(key=lambda p: p["updated"], reverse=True)
+    return out
+
+
+def _profiles_or_die():
+    """读取配置列表与当前 id;失败时打印提示并返回 None"""
+    try:
+        return list_profiles(), get_current_profile_id()
+    except (OSError, ValueError, KeyError) as e:
+        print("!! 读取 FlClash 配置信息失败:%s(数据目录: %s,可用 FLCLASH_DATA 指定)"
+              % (e, DATA_DIR))
+        return None
+
+
+def failover_targets():
+    """可切换的备用配置 id,按更新时间从新到旧(优先切最近的订阅)"""
+    info = _profiles_or_die()
+    if not info:
+        return []
+    profiles, cur = info
+    return [p["id"] for p in profiles if p["id"] != cur]
+
+
+# ---------------- 配置级健康检查与故障切换 ----------------
+def config_health(timeout_ms=DELAY_TIMEOUT_MS, group=None, presumed_dead=False):
+    """当前配置整体健康检查(只读,不改任何状态)。
+    返回 dict:ok=True 配置可用 / ok=False 配置判死(仅 all-dead 一种) /
+    ok=None 无法判定(API 无响应、组不存在、组下无可测速节点等)。
+    后三类都不是"订阅死亡",绝不能触发切换——否则 --group 写错组名
+    或配置结构特殊就会白白杀进程重启代理。
+    presumed_dead=True:调用方(select_fastest 刚做完全量测速且全灭)已扫过一遍,
+    这里只补探 1 次当前选中节点(两轮之间网络恢复时不至于白杀进程重启),
+    仍不通才沿用全灭结论,不再重复十几秒的全量测速。"""
+    if not core_up():
+        return {"ok": None, "reason": "core-api-down"}
+    proxies = get_proxies()
+    if not proxies:
+        return {"ok": None, "reason": "api-no-response"}
+    if presumed_dead:
+        root = pick_target_group(proxies, get_mode() or "rule", group)
+        now = (proxies.get(root) or {}).get("now")
+        if now:
+            _, d = test_node(now, min(timeout_ms, 3000))
+            if d:
+                return {"ok": True, "reason": "now", "now": now, "delay": d}
+        return {"ok": False,
+                "reason": "all-dead(沿用上一轮全量测速,%d 个节点全部失败)"
+                          % _last_scan.get("total", 0)}
+    mode = get_mode()
+    if mode is None:
+        mode = "rule"
+    root = pick_target_group(proxies, mode, group)
+    if root not in proxies:
+        return {"ok": None, "reason": "no-group(%s 不存在,可用 --group 指定)" % root}
+    cands = collect_candidates(proxies, root)
+    # 快路径:当前选中节点是真实节点就先探它,1 个请求即可判定,不必全量测速;
+    # 不要求 now 在 cands 里——组里只挂自动组的订阅,now 指向自动组选中的
+    # 叶子节点,同样能走这条快路径
+    now = (proxies.get(root) or {}).get("now")
+    now_type = (proxies.get(now) or {}).get("type")
+    if now and now_type not in BUILTIN_TYPES and not INFO_NODE_PAT.search(now):
+        _, d = test_node(now, min(timeout_ms, 3000))
+        if d:
+            return {"ok": True, "reason": "now", "now": now, "delay": d}
+    if not cands:
+        return {"ok": None, "reason": "no-candidate(%s 下无可测速节点,配置结构特殊)" % root}
+    print("→ 当前节点不通,全量测速 %d 个节点 ..." % len(cands))
+    results = scan_nodes(cands, timeout_ms)
+    alive = sorted((d, n) for n, d in results.items() if d)
+    if alive:
+        return {"ok": True, "reason": "scan", "best": alive[0][1],
+                "best_delay": alive[0][0], "alive": len(alive),
+                "total": len(results), "cands": cands}
+    return {"ok": False, "reason": "all-dead(%d 个节点)" % len(results)}
+
+
+def repair_selection(health, say=print):
+    """配置可用但当前选中节点不通:把主组改选到实测最快的节点"""
+    if switch_by_chain(health["cands"], health["best"]):
+        say("✓ 原选中节点不通,已改选 %s(%d ms)" % (health["best"], health["best_delay"]))
+    else:
+        say("→ 改选节点失败,保持原选择")
+
+
+def switch_profile(targets, timeout_ms=DELAY_TIMEOUT_MS):
+    """依次尝试切换到 targets 里的配置,直到某个配置测速有可用节点。
+    流程:全停 FlClash → 等 prefs 落盘稳定 → 备份并改 currentProfileId →
+    重启 → 测速验证。全部失败时还原最初的 prefs 备份并重启 FlClash(保证不断网)。
+    返回 {id,label,node,pids} 或 None。"""
+    # 切换要杀 FlClash:调用方判断之后可能隔了一段防抖/测速时间,
+    # 杀前重新确认没有其他 px 实例进来(否则会打断它们正在执行的命令)
+    if len(holders_acquire()) > 1:
+        print("!! 切换前发现其他 px 实例正在使用 FlClash,放弃切换(避免打断它们)")
+        return None
+    global _switch_restarted
+    _switch_restarted = True  # 无论成功还是失败回滚,FlClash 都会被重启
+    try:
+        labels = {p["id"]: p["label"] for p in list_profiles()}
+    except OSError as e:
+        # 配置目录读不动(被占用/半路删掉)不该让整个切换崩掉,标签退回 id
+        print("!! 读取配置列表失败(%s),标签将显示为 id" % e)
+        labels = {}
+    first_backup = None
+    for tid in targets:
+        label = labels.get(tid, str(tid))
+        try:
+            print("→ 切换配置 → %s(%s)" % (label, tid))
+            print("   停止 FlClash(必须完全退出,否则退出时会覆写刚改的设置)...")
+            stop_flclash(None)
+            wait_prefs_settled()
+            backup = set_current_profile_id(tid)
+            if first_backup is None:
+                first_backup = backup
+            # 杀进程后可能有残余覆写,回读确认,被覆写就再写一次
+            if get_current_profile_id() != tid:
+                print("   设置被残余进程覆写,重写一次")
+                set_current_profile_id(tid)
+            print("   启动 FlClash ...")
+            if not start_flclash():
+                raise RuntimeError("FlClash 启动失败")
+            inbound_ok, _ = ensure_inbound()
+            if not inbound_ok:
+                raise RuntimeError("本地代理端口 %d 未就绪" % PROXY_PORT)
+            node = select_fastest(timeout_ms=timeout_ms)
+            if node is None:
+                raise RuntimeError("该配置全部节点测速失败")
+            print("✓ 已切换到配置 %s,当前节点: %s" % (label, node))
+            return {"id": tid, "label": label, "node": node, "pids": snapshot_pids()}
+        except Exception as e:
+            print("!! 切换到 %s 失败:%s" % (label, e))
+            _dbg("!! [debug] switch_profile: %s" % e)
+    print("→ 所有备用配置均不可用,还原切换前的配置并重启 FlClash ...")
+    try:
+        stop_flclash(None)
+        wait_prefs_settled()
+        if first_backup:
+            restore_prefs(first_backup)
+        if not core_up():
+            start_flclash()
+            ensure_inbound()
+    except Exception as e:
+        print("!! 还原失败(%s),如代理异常请手动启动 FlClash" % e)
+    return None
+
+
 # ---------------- 命令执行 ----------------
+def embedded_failover(timeout_ms=DELAY_TIMEOUT_MS, group=None, holders=None):
+    """px 命令模式的内嵌配置切换:当前配置判死(全部节点测速失败)时切到其他可用配置。
+    其他 px 实例共用 FlClash 时放弃切换(杀进程会打断它们正在执行的命令)。
+    返回 switch_profile 的结果 dict 或 None(未切换)。"""
+    if group:
+        # 指定了 --group 时,"该组全灭"≠"订阅整体死亡":可能是用户钉住的组临时
+        # 不可用而默认组仍有活节点,且新订阅里也未必有同名组,不做配置级切换
+        print("→ 指定了 --group,组级不可用不触发配置切换(订阅整体以默认组衡量)")
+        return None
+    if len(holders or []) > 1:
+        print("→ 有其他 px 实例共用 FlClash,跳过自动配置切换")
+        return None
+    reason = _last_scan.get("reason")
+    if reason == "switch-failed":
+        # 上一轮是"有活节点但沿链 PUT 失败":配置本身是活的,只重试一次改选,
+        # 不做十几秒的全量重扫,更不切订阅
+        node, cands = _last_scan.get("node"), _last_scan.get("cands")
+        if node and cands and switch_by_chain(cands, node):
+            print("✓ 重试改选成功: %s" % node)
+        else:
+            print("→ 节点改选未成功(配置可用),不切换配置")
+        return None
+    # select_fastest 刚全量测速且全灭时,只补探 1 次当前节点即下结论,不再全量重扫
+    presumed = reason == "all-dead"
+    h = config_health(timeout_ms=timeout_ms, group=group, presumed_dead=presumed)
+    if h["ok"] is None:
+        print("→ 无法确认当前配置状态(%s),不自动切换" % h["reason"])
+        return None
+    if h["ok"] is True:
+        return None  # 配置其实可用(刚才测速/切换瞬时失败),不折腾
+    if not str(h["reason"]).startswith("all-dead"):
+        # 保险:只有"全部节点测速失败"才算订阅判死,其余口径一律不切
+        print("→ 判定口径为「%s」,不属于节点全灭,不自动切换" % h["reason"])
+        return None
+    print("!! 当前配置不可用(%s)" % h["reason"])
+    targets = failover_targets()
+    if not targets:
+        print("!! 没有可切换的备用配置(需要补订阅)")
+        return None
+    return switch_profile(targets, timeout_ms=timeout_ms)
+
+
 def run_cmd(cmd, use_proxy):
     env = os.environ.copy()
     if use_proxy:
@@ -763,7 +1206,9 @@ def run_cmd(cmd, use_proxy):
 
 def do_run(cmd, force=False, direct=False, no_speedtest=False,
            keep=False, group=None, canary=None, timeout_ms=DELAY_TIMEOUT_MS,
-           strict=False):
+           strict=False, no_failover=False):
+    global _switch_restarted
+    _switch_restarted = False  # 标志只在本命令的生命周期内有效
     our_pids = None
     started_by_us = False
     snap = None
@@ -793,33 +1238,64 @@ def do_run(cmd, force=False, direct=False, no_speedtest=False,
         inbound_ok, inbound_opened = ensure_inbound()
         if not inbound_ok:
             return 1
+        best = None
         if not no_speedtest:
-            if select_fastest(timeout_ms=timeout_ms, group_override=group) is None:
-                if strict:
-                    print("!! --strict:测速/切换失败,中止命令")
-                    return 1
+            best = select_fastest(timeout_ms=timeout_ms, group_override=group)
+            if best is None and not no_failover:
+                switched = embedded_failover(timeout_ms=timeout_ms, group=group,
+                                             holders=holders)
+                if switched:
+                    best = switched["node"]
+                    if started_by_us:
+                        our_pids = switched["pids"]
+                if _switch_restarted:
+                    # 切换流程重启过 FlClash(成功切换,或全部失败后回滚拉起):
+                    # 旧 PID 集已失效,按当前进程快照刷新;新实例的端口由其
+                    # 自身配置决定,之前对旧实例临时打开的 mixed-port 不再还原,
+                    # 否则收尾会把新实例的 7890 关掉、用户代理瞬间断流
+                    _switch_restarted = False
+                    inbound_opened = False
+                    if started_by_us:
+                        our_pids = snapshot_pids()
+        if best is None:
+            if strict:
+                print("!! --strict:测速/切换失败,中止命令")
+                return 1
+            if not no_speedtest:
                 print("→ 测速/切换未成功,将以当前节点继续执行")
         return run_cmd(cmd, use_proxy=True)
     finally:
-        if registered:
-            remaining = holders_release()
+        remaining = None
         if started_by_us and not keep:
+            # 先摘除自己拿剩余持有者;确认无人共用后再快速复核一次才停,
+            # 把"已释放但仍存活"的窗口压到最短(期间新实例若恰好登记,会
+            # 复用现有 FlClash 或在 ensure_core 里自行拉起,不会被误杀)
+            if registered:
+                remaining = holders_release()
+                registered = False
             if remaining:
                 print("→ 其他 px 实例仍在使用,FlClash 保持运行(剩余 %d 个)" % len(remaining))
+            elif len(holders_acquire()) > 1:
+                holders_release()
+                print("→ 收尾时有新 px 实例加入,FlClash 保持运行")
             else:
                 print("→ 命令结束,关闭本工具启动的 FlClash (pid: %s)..." % fmt_pids(our_pids))
                 closed = stop_flclash(our_pids)
                 print("✓ FlClash 已关闭" if closed else
                       "!! 部分 FlClash 进程仍存活(可手动执行 --stop 结束)")
                 restore_system_proxy(snap)
-        elif inbound_opened and not keep and not remaining:
-            # 复用实例时临时打开的 7890,结束后还原为关闭状态(不影响仍在使用的其他实例)
-            api("PATCH", "/configs", {"mixed-port": 0})
-            print("→ 已还原复用实例的本地代理端口状态(mixed-port=0)")
+        else:
+            if registered:
+                remaining = holders_release()
+                registered = False
+            if inbound_opened and not keep and not remaining:
+                # 复用实例时临时打开的 7890,结束后还原为关闭状态(不影响仍在使用的其他实例)
+                api("PATCH", "/configs", {"mixed-port": 0})
+                print("→ 已还原复用实例的本地代理端口状态(mixed-port=0)")
 
 
 # ---------------- 子命令 ----------------
-def cmd_status():
+def cmd_status(group=None):
     pids = snapshot_pids()
     print("FlClash.exe : %s (pid: %s)" % ("运行中" if pids else "未运行", fmt_pids(pids)))
     v = core_up()
@@ -829,7 +1305,7 @@ def cmd_status():
             PROXY_PORT, "监听中" if port_open(PROXY_PORT) else "未监听"))
         mode = get_mode() or "?"
         proxies = get_proxies()
-        g = pick_target_group(proxies, mode)
+        g = pick_target_group(proxies, mode, group)
         now = (proxies.get(g) or {}).get("now", "?")
         print("模式/当前   : %s / [%s] → %s" % (mode, g, now))
         nodes = real_node_count(proxies)
@@ -846,6 +1322,7 @@ def cmd_status():
                                       " → " + ps if pe == 1 else ""))
     except Exception:
         pass
+    return 0
 
 
 def cmd_test(group=None, timeout_ms=DELAY_TIMEOUT_MS):
@@ -880,15 +1357,23 @@ def cmd_start(group=None, no_speedtest=False, timeout_ms=DELAY_TIMEOUT_MS):
     ready, started, _ = ensure_core()
     if not ready:
         return 1
-    ensure_inbound()
+    inbound_ok, _ = ensure_inbound()
+    if not inbound_ok:
+        print("!! 本地代理端口 %d 未就绪(mixed-port 可能被设为 0,在 FlClash 界面开启)" % PROXY_PORT)
+        return 1
     if not no_speedtest:
         select_fastest(timeout_ms=timeout_ms, group_override=group)
-    # FlClash 自身会按其设置接管系统代理;若未接管则补开,保持可用
+    # FlClash 自身会按其设置接管系统代理;若未接管则补开,保持可用。
+    # 保守起见:已有指向其他服务器的系统代理(公司代理/PAC)时不覆盖,只提示
     time.sleep(1.5)
     if port_open(PROXY_PORT) and reg_get("ProxyEnable") != 1:
-        reg_set("ProxyServer", "127.0.0.1:%d" % PROXY_PORT)
-        reg_set("ProxyEnable", 1)
-        refresh_system_proxy()
+        server = reg_get("ProxyServer") or ""
+        if server and ("127.0.0.1:%d" % PROXY_PORT) not in server:
+            print("!! 检测到已有系统代理(%s),未覆盖;如需本工具接管请手动调整" % server)
+        else:
+            reg_set("ProxyServer", "127.0.0.1:%d" % PROXY_PORT)
+            reg_set("ProxyEnable", 1)
+            refresh_system_proxy()
     print("✓ FlClash 运行中(代理 127.0.0.1:%d),手动模式不会自动关闭" % PROXY_PORT)
     return 0
 
@@ -901,11 +1386,222 @@ def cmd_stop():
     return 0 if stop_flclash(None) else 1
 
 
+# ---------------- 配置切换子命令 ----------------
+def cmd_profiles():
+    """列出全部订阅配置及当前健康状态"""
+    info = _profiles_or_die()
+    if not info:
+        return 1
+    profiles, cur = info
+    print("FlClash 数据目录: %s" % DATA_DIR)
+    print("--- 订阅配置 ---")
+    for p in profiles:
+        mark = "  <== 当前" if p["id"] == cur else ""
+        print("  %-18d %s  (更新于 %s)%s" % (
+            p["id"], p["label"],
+            time.strftime("%m-%d %H:%M", time.localtime(p["updated"])), mark))
+    if not core_up():
+        print("(FlClash 未运行,未做健康检查)")
+        return 0
+    h = config_health()
+    if h["ok"] is True:
+        if h["reason"] == "now":
+            print("健康检查    : 当前配置可用(当前节点 %s %dms)" % (h["now"], h["delay"]))
+        else:
+            print("健康检查    : 当前配置可用(%d/%d 个节点在线,最快 %s %dms)"
+                  % (h["alive"], h["total"], h["best"], h["best_delay"]))
+    elif h["ok"] is False:
+        print("健康检查    : !! 当前配置不可用(%s)" % h["reason"])
+    else:
+        print("健康检查    : ?? 无法判定(%s)" % h["reason"])
+    return 0
+
+
+def cmd_switch(target, timeout_ms=DELAY_TIMEOUT_MS):
+    """手动切换订阅配置。target 为配置 id 或 other(切到最近更新的备用配置)"""
+    info = _profiles_or_die()
+    if not info:
+        return 1
+    profiles, cur = info
+    if target.lower() == "other":
+        others = [p for p in profiles if p["id"] != cur]
+        if not others:
+            print("!! 只有一份配置,没有可切换的目标")
+            return 1
+        tid = others[0]["id"]  # 列表已按更新时间倒序,优先切最近的订阅
+    else:
+        try:
+            tid = int(target)
+        except ValueError:
+            print("!! 无效的配置标识:%s(应为配置 id 数字或 other,用 --profiles 查看)"
+                  % target)
+            return 1
+        if tid == cur:
+            print("→ 目标配置就是当前配置,无需切换")
+            return 0
+        if tid not in {p["id"] for p in profiles}:
+            print("!! 配置 %s 不存在(用 --profiles 查看全部配置)" % tid)
+            return 1
+    holders = holders_acquire()
+    try:
+        if len(holders) > 1:
+            print("!! 有其他 px 实例共用 FlClash,为避免打断它们,拒绝切换")
+            return 1
+        result = switch_profile([tid], timeout_ms=timeout_ms)
+        if not result:
+            return 1
+        print("✓ 手动切换完成,FlClash 保持运行(要停止可执行 --stop)")
+        return 0
+    finally:
+        holders_release()
+
+
+def cmd_failover(timeout_ms=DELAY_TIMEOUT_MS, confirm_checks=None):
+    """单次故障切换巡检:FlClash 没跑跳过;当前配置可用(必要时修复节点选择);
+    连续多次判死才切换到备用配置。结果同时追加到巡检日志。"""
+    confirm = confirm_checks or FAILOVER_CONFIRM
+    lines = []
+
+    def say(msg):
+        print(msg)
+        lines.append(msg)
+
+    def finish(code, write=True):
+        if write:
+            try:
+                os.makedirs(os.path.dirname(FAILOVER_LOG), exist_ok=True)
+                # 超过 2MB 归档为 .1(覆盖旧归档),长期巡检不无限膨胀
+                if os.path.exists(FAILOVER_LOG) and \
+                        os.path.getsize(FAILOVER_LOG) > 2 * 1024 * 1024:
+                    os.replace(FAILOVER_LOG, FAILOVER_LOG + ".1")
+                with open(FAILOVER_LOG, "a", encoding="utf-8") as f:
+                    f.write("=== %s 巡检 ===\n%s\n" % (
+                        time.strftime("%Y-%m-%d %H:%M:%S"), "\n".join(lines)))
+            except OSError as e:
+                _dbg("!! [debug] 巡检日志写入失败: %s" % e)
+        return code
+
+    if not flclash_procs_running():
+        # 空闲巡检(FlClash 没在跑)只打屏幕不写日志,避免长期空转把日志灌满;
+        # 计划任务是否在跑可看任务自身的"上次运行时间"
+        print("→ FlClash 未在运行,跳过巡检(不顺手拉起)")
+        return finish(0, write=False)
+    holders = holders_acquire()
+    try:
+        h = config_health(timeout_ms=timeout_ms)
+        if h["ok"] is None:
+            say("!! 无法判定当前配置状态(%s),本次不切换" % h["reason"])
+            return finish(1)
+        if h["ok"]:
+            if h["reason"] == "now":
+                say("✓ 当前配置可用(当前节点 %s %dms)" % (h["now"], h["delay"]))
+            else:
+                say("✓ 当前配置可用(%d/%d 个节点在线)" % (h["alive"], h["total"]))
+                repair_selection(h, say)
+            return finish(0)
+        # 判死 → 复核防抖(机场瞬时抖动很常见,别一次不通就重启用户代理)
+        say("!! 当前配置不可用(%s)" % h["reason"])
+        for i in range(confirm - 1):
+            say("   5 秒后复核(%d/%d)..." % (i + 2, confirm))
+            time.sleep(5)
+            h = config_health(timeout_ms=timeout_ms)
+            if h["ok"] is True:
+                say("✓ 复核已恢复,不切换")
+                if h["reason"] != "now":
+                    repair_selection(h, say)
+                return finish(0)
+            if h["ok"] is None:
+                say("!! 复核无法判定(%s),本次不切换" % h["reason"])
+                return finish(1)
+        if len(holders) > 1:
+            say("!! 其他 px 实例正在共用 FlClash,本次不切换")
+            return finish(1)
+        targets = failover_targets()
+        if not targets:
+            say("!! 没有可切换的备用配置(需要补订阅)")
+            return finish(1)
+        say("→ 连续 %d 次判死,自动切换配置" % confirm)
+        result = switch_profile(targets, timeout_ms=timeout_ms)
+        if result:
+            say("✓ 已切换到配置 %s,当前节点 %s" % (result["label"], result["node"]))
+            return finish(0)
+        say("!! 全部备用配置不可用,已还原原配置(见上方输出)")
+        return finish(1)
+    finally:
+        holders_release()
+
+
+# ---------------- 巡检计划任务(schtasks) ----------------
+def _schtasks(args):
+    try:
+        return subprocess.run(["schtasks"] + args, capture_output=True,
+                              text=True, errors="replace", timeout=20)
+    except subprocess.TimeoutExpired:
+        # 任务计划服务卡死时别把整个工具吊住(计划任务里跑时还会持锁)
+
+        class _Timeout:
+            returncode = 1
+            stdout = ""
+            stderr = "schtasks 20 秒未响应(任务计划服务可能异常),已放弃"
+
+        return _Timeout()
+
+
+def cmd_failover_install(interval_min=15):
+    """注册定时巡检计划任务,并卸载被取代的旧版(PowerShell)巡检任务"""
+    if interval_min < 1:
+        print("→ 间隔 %s 分钟无效,已按最小值 1 分钟处理" % interval_min)
+        interval_min = 1
+    if interval_min > 1439:
+        # schtasks /sc minute 的 /MO 上限是 1439(24 小时 - 1 分钟),超了真机会注册失败
+        print("→ 间隔 %s 分钟超出上限,已按 1439 分钟处理" % interval_min)
+        interval_min = 1439
+    script = os.path.abspath(__file__)
+    py = sys.executable or "python"
+    # 后台定时巡检优先用 pythonw,避免每次运行闪一个控制台窗口
+    if os.path.basename(py).lower() == "python.exe":
+        pyw = os.path.join(os.path.dirname(py), "pythonw.exe")
+        if os.path.isfile(pyw):
+            py = pyw
+    tr = '"%s" -u "%s" --failover' % (py, script)
+    r = _schtasks(["/create", "/tn", FAILOVER_TASK_NAME, "/tr", tr,
+                   "/sc", "minute", "/mo", str(interval_min), "/f"])
+    if r.returncode != 0:
+        print("!! 注册计划任务失败:%s" % (r.stdout + r.stderr).strip())
+        return 1
+    print("✓ 已注册计划任务「%s」(每 %d 分钟巡检一次)" % (FAILOVER_TASK_NAME, interval_min))
+    print("  命令:%s" % tr)
+    print("  日志:%s" % FAILOVER_LOG)
+    for name in LEGACY_TASK_NAMES:
+        if _schtasks(["/query", "/tn", name]).returncode == 0:
+            d = _schtasks(["/delete", "/tn", name, "/f"])
+            if d.returncode == 0:
+                print("✓ 已卸载旧版巡检任务「%s」(PowerShell 版,被本工具取代)" % name)
+            else:
+                print("!! 卸载旧任务「%s」失败:%s(可手动删除)"
+                      % (name, (d.stdout + d.stderr).strip()))
+    print("  取消:python flclash_proxy.py --failover-remove")
+    return 0
+
+
+def cmd_failover_remove():
+    r = _schtasks(["/delete", "/tn", FAILOVER_TASK_NAME, "/f"])
+    if r.returncode == 0:
+        print("✓ 已删除计划任务「%s」" % FAILOVER_TASK_NAME)
+        return 0
+    if _schtasks(["/query", "/tn", FAILOVER_TASK_NAME]).returncode != 0:
+        print("→ 没有计划任务「%s」,无需删除" % FAILOVER_TASK_NAME)
+        return 0
+    print("!! 删除失败:%s" % (r.stdout + r.stderr).strip())
+    return 1
+
+
 def main():
     _u8()
     p = argparse.ArgumentParser(
         prog="flclash_proxy",
-        description="FlClash 按需代理:检测直连 → 需要时自动启动 FlClash 并测速选最快节点 → 命令结束自动关闭",
+        description="FlClash 按需代理:检测直连 → 需要时自动启动 FlClash 并测速选最快节点 → "
+                    "配置整体不可用时自动切换备用订阅配置 → 命令结束自动关闭",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="示例:  python flclash_proxy.py curl -sI https://www.google.com")
     p.add_argument("--test", action="store_true", help="测速全部节点并显示(不执行命令)")
@@ -924,24 +1620,77 @@ def main():
     p.add_argument("--canary", metavar="URL", help="直连检测用的 URL")
     p.add_argument("--strict", action="store_true",
                    help="测速/切换失败时中止命令(默认降级为以当前节点执行)")
+    p.add_argument("--no-failover", action="store_true",
+                   help="当前配置节点全灭时不自动切换其他订阅配置")
     p.add_argument("--timeout-ms", type=int, default=DELAY_TIMEOUT_MS,
                    help="单节点测速超时(毫秒,默认 %d)" % DELAY_TIMEOUT_MS)
+    p.add_argument("--profiles", action="store_true",
+                   help="列出 FlClash 全部订阅配置及健康状态")
+    p.add_argument("--failover", action="store_true",
+                   help="单次故障切换巡检(当前配置判死则自动切换备用配置)")
+    p.add_argument("--switch", metavar="ID|other",
+                   help="手动切换订阅配置(other=最近更新的备用配置)")
+    p.add_argument("--failover-install", nargs="?", const=15, type=int, metavar="MIN",
+                   help="注册每 MIN 分钟巡检的计划任务(默认 15;并卸载旧版 PS1 任务)")
+    p.add_argument("--failover-remove", action="store_true",
+                   help="删除巡检计划任务")
     p.add_argument("cmd", nargs=argparse.REMAINDER, help="要执行的命令及其参数")
     args = p.parse_args()
 
+    # ---- 参数体检:挡住会让整轮测速"全灭"进而误切配置的手滑输入 ----
+    cmd = [a for a in (args.cmd or []) if a]
+    subcmds = bool(args.status or args.stop or args.start or args.test or args.profiles
+                   or args.buy is not None or args.failover or args.switch
+                   or args.failover_install is not None or args.failover_remove)
+    timeout_used = (not subcmds or args.start or args.test
+                    or args.failover or args.switch)
+    if timeout_used and not 500 <= args.timeout_ms <= 30000:
+        clamped = max(500, min(30000, args.timeout_ms))
+        print("!! --timeout-ms %d 超出 500..30000,已按 %d 处理"
+              % (args.timeout_ms, clamped), file=sys.stderr)
+        args.timeout_ms = clamped
+    if subcmds:
+        # 子命令模式不执行命令,也不吃大部分命令选项:静默吞掉容易让人以为生效了
+        ignored = [name for name, val in (("--keep", args.keep), ("--canary", args.canary),
+                                          ("--strict", args.strict),
+                                          ("--no-failover", args.no_failover),
+                                          ("--force", args.force), ("--direct", args.direct))
+                   if val]
+        if args.group and not (args.status or args.start or args.test):
+            ignored.append("--group")
+        if args.no_speedtest and not args.start:
+            ignored.append("--no-speedtest")
+        if args.timeout_ms != DELAY_TIMEOUT_MS and not (
+                args.start or args.test or args.failover or args.switch):
+            ignored.append("--timeout-ms")
+        if ignored:
+            print("→ 这些选项对当前子命令无效,已忽略:%s" % ", ".join(ignored), file=sys.stderr)
+        if cmd:
+            print("→ 子命令模式下不执行命令,已忽略:%s" % " ".join(cmd), file=sys.stderr)
+
     if args.status:
-        cmd_status()
-        return
+        sys.exit(cmd_status(args.group))
     if args.stop:
-        print("✓ FlClash 已停止" if cmd_stop() == 0 else "!! 未能完全停止(见上方提示)")
-        return
+        rc = cmd_stop()
+        if rc != 0:
+            print("!! 未能完全停止(见上方提示)")
+        sys.exit(rc)
     if args.start:
         sys.exit(cmd_start(args.group, args.no_speedtest, args.timeout_ms))
     if args.buy is not None:
         sys.exit(cmd_buy(args.buy or None))
     if args.test:
         sys.exit(cmd_test(args.group, args.timeout_ms))
-    cmd = [a for a in (args.cmd or []) if a]
+    if args.profiles:
+        sys.exit(cmd_profiles())
+    if args.failover:
+        sys.exit(cmd_failover(timeout_ms=args.timeout_ms))
+    if args.switch:
+        sys.exit(cmd_switch(args.switch, timeout_ms=args.timeout_ms))
+    if args.failover_install is not None:
+        sys.exit(cmd_failover_install(args.failover_install))
+    if args.failover_remove:
+        sys.exit(cmd_failover_remove())
     if cmd and cmd[0] == "--":
         # 显式分隔符:px -- <命令>,用于命令首参数本身以 - 开头的场景
         cmd = cmd[1:]
@@ -951,7 +1700,8 @@ def main():
     sys.exit(do_run(cmd, force=args.force, direct=args.direct,
                     no_speedtest=args.no_speedtest, keep=args.keep,
                     group=args.group, canary=args.canary,
-                    timeout_ms=args.timeout_ms, strict=args.strict))
+                    timeout_ms=args.timeout_ms, strict=args.strict,
+                    no_failover=args.no_failover))
 
 
 if __name__ == "__main__":
