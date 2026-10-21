@@ -47,13 +47,13 @@ foreach ($cand in @("python", "py")) {
 }
 if (-not $py) {
     Write-Bad "没找到 python / py。请先安装 Python 3(https://www.python.org/downloads/windows/),勾选 Add to PATH。"
-    exit 1
+    throw "安装中止(见上方提示)"
 }
 Write-Ok "Python: $py"
 
 if ((Test-Path $Dir) -and -not $Force) {
     Write-Bad "目录已存在:$Dir(要覆盖请加 -Force)"
-    exit 1
+    throw "安装中止(见上方提示)"
 }
 
 # ---- 1. 下载 ----
@@ -68,7 +68,7 @@ try {
 } catch {
     Write-Bad "下载失败:$($_.Exception.Message)"
     Write-Warn2 "如果你在国内且 GitHub 直连不通,先开代理再跑本脚本,或手动从 Release 页下载:https://github.com/$Repo/releases"
-    exit 1
+    throw "安装中止(见上方提示)"
 }
 $size = (Get-Item $zip).Length
 Write-Ok ("已下载 {0:N0} KB" -f ($size / 1KB))
@@ -86,7 +86,7 @@ try {
     Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $Dir -Recurse -Force
 } catch {
     Write-Bad "解压失败:$($_.Exception.Message)"
-    exit 1
+    throw "安装中止(见上方提示)"
 } finally {
     Remove-Item -Force $zip -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
