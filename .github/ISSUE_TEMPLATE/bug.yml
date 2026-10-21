@@ -1,0 +1,41 @@
+name: 问题反馈
+description: 报告一个 bug 或异常行为(不提供节点/订阅)
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈!请尽量附上**可复现的最小步骤**和下面的环境信息,能省掉很多来回。
+        (本工具只做调度,不提供节点;订阅/机场问题请找你的服务商。)
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 你做了什么,期望什么,实际发生了什么
+      placeholder: |
+        1. 执行 `px --test`
+        2. 期望输出 …
+        3. 实际输出 …
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: 完整输出(含报错)
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 工具版本
+      description: `git log -1 --oneline` 或 Release 版本号
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      placeholder: Windows 11 24H2 / Python 3.12 / FlClash 0.9.1(安装版)
+  - type: textarea
+    id: status
+    attributes:
+      label: `px --status` 的输出
+      render: text
