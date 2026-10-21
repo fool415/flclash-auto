@@ -210,6 +210,7 @@ px <命令>
 本工具以 MIT 许可证发布,见 [LICENSE](./LICENSE)。它调用的 FlClash 客户端以 GPL-3.0 发布,两者是相互独立的软件
 (本工具仅启动 FlClash 进程并调用其本地 HTTP API,不构成 GPL 派生作品)。
 FlClash 版权、GPL-3.0 全文与再分发说明详见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) 与 [LICENSE-GPL-3.0.txt](./LICENSE-GPL-3.0.txt)。
+Release 附带的 FlClash 便携版为官方原版二进制:本仓库不修改、不重新编译 FlClash 代码,仅按 GPL-3.0 随附分发;FlClash 的版权归其作者所有。若你二次分发本仓库的 Release 附件,请一并保留 GPL-3.0 全文与上述声明文件。
 
 ---
 
@@ -360,4 +361,4 @@ acceleration off**, so no hosts entries are left behind.
 
 ### License
 
-MIT — see [LICENSE](./LICENSE). FlClash is GPL-3.0; this tool only launches it and talks to its local HTTP API, so the two are independent works. See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) and [LICENSE-GPL-3.0.txt](./LICENSE-GPL-3.0.txt).
+MIT — see [LICENSE](./LICENSE). FlClash is GPL-3.0; this tool only launches it and talks to its local HTTP API, so the two are independent works. See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) and [LICENSE-GPL-3.0.txt](./LICENSE-GPL-3.0.txt). The FlClash portable build attached to GitHub Releases is the unmodified upstream binary, redistributed under GPL-3.0; FlClash is copyright its authors. Keep `LICENSE-GPL-3.0.txt` and `THIRD_PARTY_NOTICES.md` alongside any redistribution of those assets.
