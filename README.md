@@ -187,6 +187,9 @@ px <命令>
 | `px --switch other` | 手动切换订阅配置(other=最近更新的备用配置,也可用配置 id) |
 | `px --failover-install [分钟]` | 注册定时巡检计划任务(默认 15 分钟;取代旧版 PS1 巡检任务) |
 | `px --failover-remove` | 删除巡检计划任务 |
+| `px --balance` | 显示当前订阅的流量余额(读 FlClash 本地缓存,不联网) |
+| `px --balance all --balance-refresh` | 列出全部订阅并向订阅地址重取一次流量头(剩余/总量/到期) |
+| `px --fetch <URL>` | 经本地代理取一个 URL 的正文(hosts 被本机加速器劫持的域名用这个) |
 | `px --no-failover <命令>` | 当前配置节点全灭时不自动切换其他订阅配置 |
 
 > **命令参数带 `-` 开头的说明**:命令第一个参数之后的 `--xxx` 会原样传给命令(如 `px curl --test` 没问题);仅当命令**首参数**本身以 `-` 开头时,用 `--` 显式分隔:`px -- -my-tool --flag`。

@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -267,6 +267,32 @@ r3 = subprocess.run([sys.executable, "-B",
                     errors="replace", env=env)
 check("--profiles exit 0 且列出两份", r3.returncode == 0 and
       "kitty.fo" in r3.stdout and "可乐云" in r3.stdout, r3.returncode)
+
+print("\nL. --balance / --fetch 的解析层(读合成 database.sqlite)")
+import sqlite3 as _sq
+_dbp = os.path.join(DATA, "database.sqlite")
+_con = _sq.connect(_dbp)
+_con.execute("create table profiles (id integer, label text, url text, subscription_info text)")
+_con.execute("insert into profiles values (?,?,?,?)",
+             (367162709361299456, "Kitty Network", "https://example.invalid/sub",
+              json.dumps({"upload": 284083269, "download": 5401693161,
+                          "total": 137438953472, "expire": 1823141577})))
+_con.commit()
+_con.close()
+_buf = io.StringIO()
+with redirect_stdout(_buf):
+    _rc = fp.cmd_balance("all")
+_bal = _buf.getvalue()
+check("--balance 算出 122.7 GB 剩余 / 128.0 GB 总量",
+      _rc == 0 and "122.7 GB" in _bal and "128.0 GB" in _bal, _bal.splitlines()[:2])
+check("parse_userinfo 支持订阅头格式",
+      fp.parse_userinfo("upload=1; download=2; total=3; expire=4") ==
+      {"upload": 1, "download": 2, "total": 3, "expire": 4})
+check("parse_userinfo 支持 DB 里的 JSON 文本",
+      fp.parse_userinfo('{"upload": 10, "total": 20}')["total"] == 20)
+check("fmt_bytes 1024 进制", fp.fmt_bytes(137438953472) == "128.0 GB")
+check("_same_id 容忍 JS 双精度丢位",
+      fp._same_id(367162709361299460, 367162709361299456) and not fp._same_id(1, 2))
 
 fail = [x for x in RESULTS if not x[0]]
 print("\n" + "=" * 70)

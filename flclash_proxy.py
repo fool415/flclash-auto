@@ -45,6 +45,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -1387,6 +1388,164 @@ def cmd_stop():
 
 
 # ---------------- 配置切换子命令 ----------------
+# ---------------- 订阅流量余额 / 走代理取正文 ----------------
+SUB_UA = os.environ.get("FLCLASH_SUB_UA", "clash-verge/v2.4.2")
+_TRAFFIC_KEYS = ("upload", "download", "total", "expire")
+
+
+def parse_userinfo(raw):
+    """解析 subscription-userinfo(头里的 upload=..;download=..;total=..;expire=..)
+    或 DB 里同名字段的 dict / JSON 文本;缺失的键为 None"""
+    if isinstance(raw, str) and raw.strip().startswith("{"):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = None
+    out = {k: None for k in _TRAFFIC_KEYS}
+    if isinstance(raw, dict):
+        for k in _TRAFFIC_KEYS:
+            v = raw.get(k)
+            try:
+                out[k] = int(v) if v not in (None, "") else None
+            except (TypeError, ValueError):
+                out[k] = None
+        return out
+    for part in (raw or "").split(";"):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        k = k.strip().lower()
+        if k not in out:
+            continue
+        try:
+            out[k] = int(float(v.strip()))
+        except ValueError:
+            pass
+    return out
+
+
+def fmt_bytes(n):
+    """字节数转人话(1024 进制);None 返回 ?"""
+    if n is None:
+        return "?"
+    if n < 1024:
+        return "%d B" % n
+    x = float(n)
+    for unit in ("KB", "MB", "GB", "TB"):
+        x /= 1024.0
+        if x < 1024 or unit == "TB":
+            return "%.1f %s" % (x, unit)
+    return "%.1f TB" % x
+
+
+def _same_id(a, b):
+    """配置 id 是 int64,而 prefs 里的 currentProfileId 经 JS 双精度存储会丢精度
+    (如 ...456 读回来是 ...460),所以超大 id 按数值容差比较;小 id 精确比较"""
+    try:
+        x, y = int(a), int(b)
+    except (TypeError, ValueError):
+        return str(a) == str(b)
+    if max(abs(x), abs(y)) > 10 ** 15:
+        return abs(x - y) <= 1024
+    return x == y
+
+
+def traffic_from_db(profile_id=None):
+    """从 FlClash 的 database.sqlite 读订阅流量缓存(只读 URI 打开,不占写锁)。
+    profile_id 为 None 时取当前配置;'all' 取全部。"""
+    db = os.path.join(DATA_DIR, "database.sqlite")
+    if not os.path.isfile(db):
+        return []
+    uri = "file:%s?mode=ro" % urllib.parse.quote(db.replace(os.sep, "/"), safe="/:")
+    con = sqlite3.connect(uri, uri=True, timeout=3)
+    try:
+        rows = con.execute(
+            "select id, label, url, subscription_info from profiles").fetchall()
+    except sqlite3.Error as e:
+        print("!! 读取订阅缓存失败:%s" % e, file=sys.stderr)
+        return []
+    finally:
+        con.close()
+    if profile_id is None:
+        try:
+            profile_id = get_current_profile_id()
+        except (OSError, ValueError, KeyError):
+            profile_id = None
+    out = []
+    for pid, label, url, info in rows:
+        if profile_id not in (None, "all") and not _same_id(profile_id, pid):
+            continue
+        out.append({"id": pid, "label": label or str(pid), "url": url,
+                    "info": parse_userinfo(info)})
+    return out
+
+
+def refresh_userinfo(url, timeout=15):
+    """向订阅地址重新请求一次,取 subscription-userinfo 头;失败返回 None"""
+    req = urllib.request.Request(url, headers={"User-Agent": SUB_UA})
+    try:
+        with _NO_PROXY_OPENER.open(req, timeout=timeout) as r:
+            raw = r.headers.get("subscription-userinfo")
+    except (urllib.error.URLError, OSError) as e:
+        print("!! 刷新订阅失败:%s(仍用缓存数据)" % e, file=sys.stderr)
+        return None
+    if not raw:
+        print("!! 订阅地址未返回 subscription-userinfo 头(仍用缓存数据)", file=sys.stderr)
+        return None
+    return parse_userinfo(raw)
+
+
+def cmd_balance(target=None, refresh=False):
+    """显示订阅流量余额:默认读 FlClash 缓存,refresh=True 时向订阅地址重取一次"""
+    rows = traffic_from_db("all" if target == "all" else (target or None))
+    if not rows:
+        print("!! 没找到订阅流量缓存(FlClash 数据目录: %s)" % DATA_DIR, file=sys.stderr)
+        return 1
+    for r in rows:
+        info = r["info"]
+        fresh = False
+        if refresh and r["url"]:
+            new = refresh_userinfo(r["url"])
+            if new:
+                info, fresh = new, True
+        used = sum(v for v in (info.get("upload"), info.get("download")) if v)
+        total, expire = info.get("total"), info.get("expire")
+        print("订阅配置    : %s  %s" % (r["id"], r["label"]))
+        if total:
+            print("已用        : %s / %s (%.1f%%)"
+                  % (fmt_bytes(used), fmt_bytes(total), used * 100.0 / total))
+            print("剩余        : %s" % fmt_bytes(max(total - used, 0)))
+        else:
+            print("已用        : %s(订阅未返回总量)" % fmt_bytes(used))
+        if expire:
+            print("到期        : %s(剩 %d 天)"
+                  % (time.strftime("%Y-%m-%d", time.localtime(expire)),
+                     int((expire - time.time()) // 86400)))
+        print("数据来源    : %s" % ("刚向订阅地址刷新" if fresh
+                                   else "FlClash 本地缓存(加 --balance-refresh 可刷新)"))
+    return 0
+
+
+def cmd_fetch(url, max_bytes=200000, timeout_ms=25000):
+    """经本地代理取一个 URL 的正文。hosts 被本机加速器劫持到 127.0.0.1 的域名,
+    直连/系统代理都拿不到正确内容,只有显式走代理通道可靠。"""
+    proxy = "http://127.0.0.1:%d" % PROXY_PORT
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (flclash_proxy)"})
+    try:
+        with opener.open(req, timeout=timeout_ms / 1000.0) as r:
+            body = r.read(max_bytes)
+            charset = r.headers.get_content_charset() or "utf-8"
+            status = r.status
+    except (urllib.error.URLError, OSError) as e:
+        print("!! 取 %s 失败:%s(先确认 FlClash 在跑:--start)" % (url, e), file=sys.stderr)
+        return 1
+    print("→ HTTP %d,输出 %d 字节" % (status, len(body)), file=sys.stderr)
+    sys.stdout.write(body.decode(charset, "replace"))
+    return 0
+
+
 def cmd_profiles():
     """列出全部订阅配置及当前健康状态"""
     info = _profiles_or_die()
@@ -1634,6 +1793,14 @@ def main():
                    help="注册每 MIN 分钟巡检的计划任务(默认 15;并卸载旧版 PS1 任务)")
     p.add_argument("--failover-remove", action="store_true",
                    help="删除巡检计划任务")
+    p.add_argument("--balance", nargs="?", const="current", metavar="ID|all",
+                   help="显示订阅流量余额(默认当前配置;all=全部配置)")
+    p.add_argument("--balance-refresh", action="store_true",
+                   help="--balance 时向订阅地址重新取一次流量头(默认只读本地缓存)")
+    p.add_argument("--fetch", metavar="URL",
+                   help="经本地代理取一个 URL 的正文(hosts 被劫持的域名用这个)")
+    p.add_argument("--max-bytes", type=int, default=200000,
+                   help="--fetch 最多输出的字节数(默认 200000)")
     p.add_argument("cmd", nargs=argparse.REMAINDER, help="要执行的命令及其参数")
     args = p.parse_args()
 
@@ -1641,9 +1808,10 @@ def main():
     cmd = [a for a in (args.cmd or []) if a]
     subcmds = bool(args.status or args.stop or args.start or args.test or args.profiles
                    or args.buy is not None or args.failover or args.switch
-                   or args.failover_install is not None or args.failover_remove)
+                   or args.failover_install is not None or args.failover_remove
+                   or args.balance is not None or args.fetch)
     timeout_used = (not subcmds or args.start or args.test
-                    or args.failover or args.switch)
+                    or args.failover or args.switch or args.fetch)
     if timeout_used and not 500 <= args.timeout_ms <= 30000:
         clamped = max(500, min(30000, args.timeout_ms))
         print("!! --timeout-ms %d 超出 500..30000,已按 %d 处理"
@@ -1654,14 +1822,18 @@ def main():
         ignored = [name for name, val in (("--keep", args.keep), ("--canary", args.canary),
                                           ("--strict", args.strict),
                                           ("--no-failover", args.no_failover),
-                                          ("--force", args.force), ("--direct", args.direct))
+                                          ("--force", args.force), ("--direct", args.direct),
+                                          ("--balance-refresh",
+                                           args.balance_refresh and args.balance is None),
+                                          ("--max-bytes", args.max_bytes != 200000
+                                           and not args.fetch))
                    if val]
         if args.group and not (args.status or args.start or args.test):
             ignored.append("--group")
         if args.no_speedtest and not args.start:
             ignored.append("--no-speedtest")
         if args.timeout_ms != DELAY_TIMEOUT_MS and not (
-                args.start or args.test or args.failover or args.switch):
+                args.start or args.test or args.failover or args.switch or args.fetch):
             ignored.append("--timeout-ms")
         if ignored:
             print("→ 这些选项对当前子命令无效,已忽略:%s" % ", ".join(ignored), file=sys.stderr)
@@ -1691,6 +1863,13 @@ def main():
         sys.exit(cmd_failover_install(args.failover_install))
     if args.failover_remove:
         sys.exit(cmd_failover_remove())
+    if args.balance is not None:
+        target = None if args.balance == "current" else args.balance
+        sys.exit(cmd_balance(target, refresh=args.balance_refresh))
+    if args.fetch:
+        sys.exit(cmd_fetch(args.fetch,
+                           max_bytes=max(1000, min(10000000, args.max_bytes)),
+                           timeout_ms=max(5000, args.timeout_ms * 5)))
     if cmd and cmd[0] == "--":
         # 显式分隔符:px -- <命令>,用于命令首参数本身以 - 开头的场景
         cmd = cmd[1:]
